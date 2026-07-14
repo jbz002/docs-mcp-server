@@ -150,6 +150,13 @@ export const DEFAULT_CONFIG = {
     requestTimeoutMs: 30_000,
     initTimeoutMs: 30_000,
     vectorDimension: 1536,
+    /**
+     * Opt-in: forward the configured vector dimension to the embedding API as
+     * the `dimensions` request param. Only meaningful for the openai provider
+     * with models that honor it (e.g. text-embedding-3-*, iFlytek MaaS Qwen3).
+     * Defaults to false to preserve native model dimensions.
+     */
+    requestDimensions: false,
   },
   db: {
     migrationMaxRetries: 5,
@@ -350,6 +357,9 @@ export const AppConfigSchema = z.object({
         .int()
         .min(1, "embedding dimension must be at least 1")
         .default(DEFAULT_CONFIG.embeddings.vectorDimension),
+      requestDimensions: envBoolean.default(
+        DEFAULT_CONFIG.embeddings.requestDimensions,
+      ),
     })
     .default(DEFAULT_CONFIG.embeddings),
   db: z

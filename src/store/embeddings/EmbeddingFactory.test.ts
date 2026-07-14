@@ -209,4 +209,25 @@ describe("createEmbeddingModel", () => {
       }
     });
   });
+
+  describe("embeddings.requestDimensions (forward dimensions to API)", () => {
+    test("should forward vectorDimension as dimensions, with float encoding, when enabled", () => {
+      const model = createEmbeddingModel("openai:text-embedding-3-large", {
+        ...runtimeConfig,
+        config: { ...runtimeConfig.config, requestDimensions: true },
+        vectorDimension: 1024,
+      });
+      expect(model).toBeInstanceOf(OpenAIEmbeddings);
+      expect((model as any).dimensions).toBe(1024);
+      // float is forced because some providers mis-handle dimensions with base64
+      expect((model as any).encodingFormat).toBe("float");
+    });
+
+    test("should not forward dimensions or encodingFormat by default", () => {
+      const model = createEmbeddingModel("text-embedding-3-small", runtimeConfig);
+      expect(model).toBeInstanceOf(OpenAIEmbeddings);
+      expect((model as any).dimensions).toBeUndefined();
+      expect((model as any).encodingFormat).toBeUndefined();
+    });
+  });
 });

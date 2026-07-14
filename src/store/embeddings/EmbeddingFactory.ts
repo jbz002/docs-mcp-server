@@ -128,6 +128,7 @@ export function createEmbeddingModel(
   const config = runtime?.config;
   const requestTimeoutMs = runtime?.requestTimeoutMs ?? config?.requestTimeoutMs;
   const vectorDimension = runtime?.vectorDimension ?? config?.vectorDimension;
+  const requestDimensions = config?.requestDimensions === true;
   if (vectorDimension === undefined) {
     throw new ModelConfigurationError(
       "Embedding vector dimension is required; set DOCS_MCP_EMBEDDINGS_VECTOR_DIMENSION or embeddings.vectorDimension in config.",
@@ -153,6 +154,15 @@ export function createEmbeddingModel(
           modelName: model,
           batchSize: 512, // OpenAI supports large batches
           timeout: requestTimeoutMs,
+          // Forward the configured dimension to providers that honor the
+          // `dimensions` request param (opt-in via embeddings.requestDimensions).
+          // Also force float encoding: some OpenAI-compatible providers mis-handle
+          // `dimensions` when combined with the SDK's default base64 encoding
+          // (observed returning a wrong, shorter vector), so request float whenever
+          // we send dimensions.
+          ...(requestDimensions
+            ? { dimensions: vectorDimension, encodingFormat: "float" }
+            : {}),
         };
       // Add custom base URL if specified
       const baseURL = process.env.OPENAI_API_BASE;

@@ -685,6 +685,7 @@ export class DocumentStore {
     return createEmbeddingModel(config.modelSpec, {
       requestTimeoutMs: this.config.embeddings.requestTimeoutMs,
       vectorDimension,
+      config: this.config.embeddings,
     });
   }
 

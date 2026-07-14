@@ -946,8 +946,10 @@ export class HtmlPlaywrightMiddleware implements ContentProcessorMiddleware {
       logger.debug(`Fetching frame content from: ${resolvedUrl}`);
 
       // Navigate to the frame URL
+      // "domcontentloaded": see main page goto above — avoid blocking on
+      // unreachable third-party sub-resources inside frames.
       await framePage.goto(resolvedUrl, {
-        waitUntil: "load",
+        waitUntil: "domcontentloaded",
         timeout: this.config.pageTimeoutMs,
       });
       await framePage.waitForSelector("body", {
@@ -1175,9 +1177,15 @@ export class HtmlPlaywrightMiddleware implements ContentProcessorMiddleware {
       // Wait for either body (normal HTML) or frameset (frameset documents) to appear
       const pageTimeoutMs = this.getPageTimeoutMs();
 
-      // Load initial HTML content
+      // Load initial HTML content. Use "domcontentloaded" rather than "load":
+      // the page's own HTML is served locally via route interception above, so
+      // the DOM is ready almost instantly. Waiting for "load" would block on
+      // third-party sub-resources (analytics, social embeds) that may be
+      // unreachable from this host and never finish, blowing the navigation
+      // timeout. Remaining waits (selector, networkidle, iframes) below are all
+      // fault-tolerant, so dynamic content still renders without risking a hang.
       await page.goto(context.source, {
-        waitUntil: "load",
+        waitUntil: "domcontentloaded",
         timeout: this.getBrowserTimeoutMs(),
       });
 
