@@ -10,8 +10,14 @@ import type { EventBusService } from "../events";
 import { registerSseListeners, startSseHeartbeat } from "../events/sseUtils";
 import type { IPipeline } from "../pipeline/trpc/interfaces";
 import { PipelineJobStatus } from "../pipeline/types";
-import type { ScraperOptions } from "../scraper/types";
+import { AutoDetectFetcher } from "../scraper/fetcher";
+import type { ScrapeResult, ScraperOptions } from "../scraper/types";
+import { GreedySplitter } from "../splitter/GreedySplitter";
+import { SemanticMarkdownSplitter } from "../splitter/SemanticMarkdownSplitter";
+import type { Chunk } from "../splitter/types";
 import type { IDocumentManagement } from "../store/trpc/interfaces";
+import { FetchUrlTool } from "../tools/FetchUrlTool";
+import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
 
 // ─── Reusable Zod schemas ────────────────────────────────────────────────
@@ -69,6 +75,7 @@ export async function registerRestService(
   pipeline: IPipeline,
   docService: IDocumentManagement,
   eventBus: EventBusService,
+  config: AppConfig,
 ): Promise<void> {
   const api = server;
 
@@ -403,6 +410,151 @@ export async function registerRestService(
       });
     },
   );
+
+  // ─── Fetch URL ────────────────────────────────────────────────────
+
+  api.post("/api/fetch-url", async (request: FastifyRequest, reply: FastifyReply) => {
+    await handleRoute(reply, async () => {
+      const body = request.body as Record<string, unknown>;
+      const parsed = z
+        .object({
+          url: z.string().url().describe("URL to fetch and convert to Markdown."),
+          followRedirects: z.boolean().optional().default(true),
+          scrapeMode: z.enum(["fetch", "playwright", "auto"]).optional(),
+          headers: z.record(z.string(), z.string()).optional(),
+        })
+        .parse(body);
+
+      const fetcher = new AutoDetectFetcher(config.scraper);
+      const tool = new FetchUrlTool(fetcher, config);
+
+      const markdown = await tool.execute({
+        url: parsed.url,
+        followRedirects: parsed.followRedirects,
+        scrapeMode: parsed.scrapeMode as never,
+        headers: parsed.headers,
+      });
+      return { content: markdown };
+    });
+  });
+
+  // ─── Ingest (Store) ───────────────────────────────────────────────
+
+  api.post("/api/ingest", async (request: FastifyRequest, reply: FastifyReply) => {
+    await handleRoute(reply, async () => {
+      const body = request.body as Record<string, unknown>;
+      const parsed = z
+        .object({
+          library: nonEmptyTrimmed,
+          version: optionalTrimmed,
+          documents: z
+            .array(
+              z.object({
+                url: z.string().min(1),
+                title: z.string(),
+                contentType: z.string().optional().default("text/markdown"),
+                chunks: z.array(
+                  z.object({
+                    content: z.string(),
+                    types: z.array(z.string()).optional().default(["text"]),
+                    section: z
+                      .object({
+                        level: z.number().int().optional().default(0),
+                        path: z.array(z.string()).optional().default([]),
+                      })
+                      .optional()
+                      .default({ level: 0, path: [] }),
+                  }),
+                ),
+              }),
+            )
+            .min(1),
+        })
+        .parse(body);
+
+      const scrapeResults: ScrapeResult[] = parsed.documents.map((doc) => ({
+        url: doc.url,
+        title: doc.title,
+        sourceContentType: doc.contentType,
+        contentType: doc.contentType,
+        textContent: doc.chunks.map((c) => c.content).join("\n"),
+        links: [],
+        errors: [],
+        chunks: doc.chunks.map(
+          (c): Chunk => ({
+            types: c.types as Chunk["types"],
+            content: c.content,
+            section: {
+              level: c.section.level,
+              path: c.section.path,
+            },
+          }),
+        ),
+      }));
+
+      await docService.ingestDocuments(
+        parsed.library,
+        parsed.version ?? null,
+        scrapeResults,
+      );
+      return { ingested: scrapeResults.length };
+    });
+  });
+
+  // ─── Ingest Raw (Store) ──────────────────────────────────────────
+
+  // Create splitter once, reuse across requests
+  const { minChunkSize, preferredChunkSize, maxChunkSize } = config.splitter;
+  const rawSplitter = new GreedySplitter(
+    new SemanticMarkdownSplitter(preferredChunkSize, maxChunkSize),
+    minChunkSize,
+    preferredChunkSize,
+    maxChunkSize,
+  );
+
+  api.post("/api/ingest-raw", async (request: FastifyRequest, reply: FastifyReply) => {
+    await handleRoute(reply, async () => {
+      const body = request.body as Record<string, unknown>;
+      const parsed = z
+        .object({
+          library: nonEmptyTrimmed,
+          version: optionalTrimmed,
+          documents: z
+            .array(
+              z.object({
+                url: z.string().min(1),
+                title: z.string(),
+                contentType: z.string().optional().default("text/markdown"),
+                content: z.string().min(1),
+              }),
+            )
+            .min(1),
+        })
+        .parse(body);
+
+      const scrapeResults: ScrapeResult[] = [];
+      for (const doc of parsed.documents) {
+        const chunks = await rawSplitter.splitText(doc.content, doc.contentType);
+        scrapeResults.push({
+          url: doc.url,
+          title: doc.title,
+          sourceContentType: doc.contentType,
+          contentType: doc.contentType,
+          textContent: doc.content,
+          links: [],
+          errors: [],
+          chunks,
+        });
+      }
+
+      await docService.ingestDocuments(
+        parsed.library,
+        parsed.version ?? null,
+        scrapeResults,
+      );
+      return { ingested: scrapeResults.length };
+    });
+  });
 
   // ─── Events (SSE) ───────────────────────────────────────────────────
 

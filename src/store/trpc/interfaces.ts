@@ -2,7 +2,7 @@
  * Interface for document management operations exposed externally.
  * Implemented by the local DocumentManagementService and the remote tRPC client.
  */
-import type { ScraperOptions } from "../../scraper/types";
+import type { ScrapeResult, ScraperOptions } from "../../scraper/types";
 import type { EmbeddingModelConfig } from "../embeddings/EmbeddingConfig";
 import type {
   DbVersionWithLibrary,
@@ -48,6 +48,19 @@ export interface IDocumentManagement {
     maxPages: number,
   ): Promise<void>;
   storeScraperOptions(versionId: number, options: ScraperOptions): Promise<void>;
+
+  // Document ingestion (used by REST API for external content)
+  addScrapeResult(
+    library: string,
+    version: string | null | undefined,
+    depth: number,
+    result: ScrapeResult,
+  ): Promise<void>;
+  ingestDocuments(
+    library: string,
+    version: string | null | undefined,
+    results: ScrapeResult[],
+  ): Promise<void>;
 
   // Embedding configuration
   getActiveEmbeddingConfig(): EmbeddingModelConfig | null;

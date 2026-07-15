@@ -489,6 +489,23 @@ export class DocumentManagementService {
   }
 
   /**
+   * Batch ingests multiple pre-processed documents into the store.
+   * Emits a single LIBRARY_CHANGE event after all documents are stored.
+   */
+  async ingestDocuments(
+    library: string,
+    version: string | null | undefined,
+    results: ScrapeResult[],
+  ): Promise<void> {
+    for (const result of results) {
+      // Temporarily suppress per-document events during batch ingest
+      await this.store.addDocuments(library, this.normalizeVersion(version), 0, result);
+    }
+    // Emit a single change event after the entire batch
+    this.eventBus.emit(EventType.LIBRARY_CHANGE, undefined);
+  }
+
+  /**
    * Searches for documentation content across versions.
    * Uses hybrid search (vector + FTS).
    * If version is omitted, searches documents without a specific version.

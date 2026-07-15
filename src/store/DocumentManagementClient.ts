@@ -3,7 +3,7 @@
  * Implements IDocumentManagement and delegates to /api endpoints.
  */
 
-import type { ScraperOptions } from "../scraper/types";
+import type { ScrapeResult, ScraperOptions } from "../scraper/types";
 import { logger } from "../utils/logger";
 import type { EmbeddingModelConfig } from "./embeddings/EmbeddingConfig";
 import type { IDocumentManagement } from "./trpc/interfaces";
@@ -154,6 +154,27 @@ export class DocumentManagementClient implements IDocumentManagement {
     return null;
   }
 
+  async addScrapeResult(
+    library: string,
+    version: string | null | undefined,
+    depth: number,
+    result: ScrapeResult,
+  ): Promise<void> {
+    await this.ingestDocuments(library, version, [result]);
+  }
+
+  async ingestDocuments(
+    library: string,
+    version: string | null | undefined,
+    results: ScrapeResult[],
+  ): Promise<void> {
+    await this.post("/api/ingest", {
+      library,
+      version: version ?? null,
+      documents: results,
+    });
+  }
+
   // ─── HTTP helpers ──────────────────────────────────────────────────
 
   private async get<T>(path: string): Promise<T> {
@@ -167,6 +188,17 @@ export class DocumentManagementClient implements IDocumentManagement {
   private async put(path: string, body: unknown): Promise<void> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+  }
+
+  private async post(path: string, body: unknown): Promise<void> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
