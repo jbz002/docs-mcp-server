@@ -1,137 +1,178 @@
 
-# Agent Instructions for docs-mcp-server
+# docs-mcp-server Agent 指令
 
-## Repository Context
+## 仓库概览
 
-- **Repository**: `arabold/docs-mcp-server`
-- **Core Stack**: Node.js 22.x, TypeScript, Vite, AlpineJS, TailwindCSS, SQLite (better-sqlite3)
-  - **Node Version**: Always use **Node.js v22** for local development and builds, even if `package.json` allows older versions. If `nvm` is installed, run `nvm use 22` before local commands.
-- **Tooling**: Biome (lint/format), Vitest (test), Husky (pre-commit)
-- **Critical Documentation**:
-  - 📖 **Read `README.md`** first for project structure, setup, and configuration details.
-  - 🏗️ **Read `ARCHITECTURE.md`** before making changes to understand system design and service interactions.
+- **仓库**: `arabold/docs-mcp-server`
+- **技术栈**: Node.js 22.x, TypeScript, Vite, AlpineJS, TailwindCSS, SQLite (better-sqlite3)
+  - **Node 版本**: 本地开发和构建始终使用 **Node.js v22**，即使 `package.json` 允许更低版本。已安装 nvm 时先执行 `nvm use 22`。
+- **工具链**: Biome（lint/格式化）、Vitest（测试）、Husky（pre-commit）
+- **必读文档**:
+  - 📖 **`README.md`** — 项目结构、安装和配置
+  - 🏗️ **`ARCHITECTURE.md`** — 系统设计和组件交互，改代码前必读
 
-## Development Workflow
+## 开发工作流
 
-### Key Commands
+### 常用命令
 
-| Task | Command | Description |
-|------|---------|-------------|
-| **Setup** | `npm install` | Install dependencies |
-| **Build** | `npm run build` | Build both server and web assets |
-| **Lint** | `npm run lint` | Check code issues with Biome |
-| **Fix** | `npm run lint:fix` | Auto-fix lint issues (add `-- --unsafe` if needed) |
-| **Typecheck** | `npm run typecheck` | Run TypeScript compiler checks |
-| **Format** | `npm run format` | Format code with Biome |
-| **Test All** | `npm test` | Run all tests with Vitest |
-| **Test Single** | `npx vitest run <path>` | Run a specific test file (e.g., `src/utils/foo.test.ts`) |
+| 任务 | 命令 | 说明 |
+|------|------|------|
+| **安装依赖** | `npm install` | 安装依赖 |
+| **构建** | `npm run build` | 构建 server 和 web 资源 |
+| **检查** | `npm run lint` | Biome 检查 |
+| **自动修复** | `npm run lint:fix` | 自动修复 lint（必要时加 `-- --unsafe`） |
+| **类型检查** | `npm run typecheck` | TypeScript 编译器检查 |
+| **格式化** | `npm run format` | Biome 格式化 |
+| **全量测试** | `npm test` | Vitest 运行所有测试 |
+| **单个测试** | `npx vitest run <path>` | 运行指定测试文件（如 `src/utils/foo.test.ts`） |
 
-### Git Workflow
+### Git 工作流
 
-- **Branching**: `<type>/<issue>-<desc>` (e.g., `feat/123-add-cache`)
-- **Pre-commit**: Husky runs lint, typecheck, and tests. **Never** bypass.
-- **Security**: **NEVER** commit secrets, credentials, or sensitive data (e.g., `.env`).
+- **分支命名**: `<type>/<issue>-<desc>`（如 `feat/123-add-cache`）
+- **Pre-commit**: Husky 执行 lint、typecheck 和测试。**禁止**跳过。
+- **安全**: **禁止**提交密钥、凭据或敏感数据（如 `.env`）。
 
-### Dependency Hygiene
+### 依赖管理
 
-- Use `npm ci` (not `npm install`) when you just need `node_modules`; it installs from the lockfile without mutating it. Reserve `npm install` for intentional dependency changes.
-- Keep Node 22 — `better-sqlite3` ships a Node-ABI-pinned native binary. Do not bump the engine floor to v24+.
-- For occasional CLI tools that aren't part of the runtime (e.g. `promptfoo` for search evals), invoke them via `npx -y <pkg>@<version>` from `package.json` scripts rather than declaring them as dependencies — keeps the dep tree and lockfile clean.
+- 仅需 `node_modules` 时用 `npm ci`（从 lockfile 安装，不修改 lockfile）。`npm install` 仅用于有意的依赖变更。
+- 保持 Node 22 — `better-sqlite3` 绑定 Node-ABI 原生二进制，不要将最低引擎版本提升到 v24+。
+- 偶尔使用的 CLI 工具（如 `promptfoo` 搜索评估），通过 `package.json` scripts 中的 `npx -y <pkg>@<version>` 调用，不声明为依赖。
 
-### Commit Messages
+### 提交信息
 
-Strictly enforced by `commitlint`. Commits will fail if format is incorrect.
+由 `commitlint` 严格校验，格式错误则提交失败。
 
-- **Format**: `<type>(<scope>): <subject>` (Scope is optional but recommended)
-- **Types**: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
-- **Subject Rules**:
-  - Must be **lower case**
-  - Must **NOT** end with a period
-  - Keep header under 100 characters
+- **格式**: `<type>(<scope>): <subject>`（scope 可选但推荐）
+- **类型**: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
+- **subject 规则**:
+  - 必须**小写**
+  - 末尾**不能**有句号
+  - 标题不超过 100 字符
 - **Body/Footer**:
-  - Separate from header with a blank line
-  - No line length limit (configured in `commitlint.config.js`)
+  - 与标题用空行分隔
+  - 无行长度限制（在 `commitlint.config.js` 中配置）
 
-## Code Style & Conventions
+## 代码风格与规范
 
 ### TypeScript
-- **Strictness**: No `any` (unless absolutely necessary), no non-null assertions (`!`).
-- **Imports**: All imports at top. Auto-sorted by Biome.
-- **Naming**:
-  - Classes/Interfaces/Types: `PascalCase`
-  - Variables/Functions/Methods: `camelCase`
-  - Constants: `UPPER_SNAKE_CASE` (global) or `camelCase` (local)
-- **TSDoc**: Mandatory for all exported functions/classes. Summary first, then params/returns.
+- **严格性**: 禁止 `any`（除非绝对必要），禁止非空断言 `!`。
+- **导入**: 全部在顶部，Biome 自动排序。
+- **命名**:
+  - 类/接口/类型: `PascalCase`
+  - 变量/函数/方法: `camelCase`
+  - 常量: 全局 `UPPER_SNAKE_CASE`，局部 `camelCase`
+- **TSDoc**: 所有导出的函数/类必须写 TSDoc。先写 summary，再写 params/returns。
 
-### Error Handling
-- **Boundaries**: Use `try/catch` at API/CLI boundaries.
-- **Logging**: Log errors via `logger.error` with `❌` prefix.
-- **Response**: Return standard HTTP codes (e.g., 500) for API errors.
-- **Safety**: Sanitize binary content from error logs.
+### 错误处理
+- **边界**: API/CLI 边界使用 `try/catch`。
+- **日志**: 通过 `logger.error` 记录错误，带 `❌` 前缀。
+- **响应**: API 错误返回标准 HTTP 状态码（如 500）。
+- **安全**: 对错误日志中的二进制内容做脱敏处理。
 
 ### Web UI (AlpineJS + HTMX)
-- **Components**: AlpineJS with TSX (`kitajs`).
-- **Conditionals**: Use ternary `foo ? <Bar/> : null` (avoid `foo && <Bar/>`).
-- **Styling**: TailwindCSS utility classes.
+- **组件**: AlpineJS + TSX (`kitajs`)。
+- **条件渲染**: 使用三元表达式 `foo ? <Bar/> : null`（避免 `foo && <Bar/>`）。
+- **样式**: TailwindCSS 工具类。
 
-## Documentation Guidelines
+## 文档规范
 
-### File Targets
-- `README.md`: User-facing (install, config, usage).
-- `ARCHITECTURE.md`: Developer-facing (concepts, system design).
-- `docs/*.md`: Deep dives into specific subsystems.
+### 目标文件
+- `README.md`: 面向用户（安装、配置、使用）
+- `ARCHITECTURE.md`: 面向开发者（概念、系统设计）
+- `docs/*.md`: 特定子系统的深入文档
 
-### Writing Principles
-- **Tone**: Declarative, present tense.
-- **Focus**: "What it does", not "what it doesn't do".
-- **Diagrams**: Mermaid for workflows/state. No markdown formatting in diagram titles.
+### 写作原则
+- **语态**: 陈述句，一般现在时。
+- **重点**: 写"它做什么"，不写"它不做什么"。
+- **图表**: 用 Mermaid 画工作流/状态图。图表标题中不加 markdown 格式。
 
-## Logging Strategy
+## 日志策略
 
-- **User Output**: `console.*` (CLI results).
-- **App Events**: `logger.info` (meaningful state changes).
-- **Debugging**: `logger.debug` (granular flow, disabled by default).
-- **Formats**: Prefix meaningful logs with emojis (e.g., `🔗`, `❌`, `✅`). **Never** use emojis in `debug` logs.
+- **用户输出**: `console.*`（CLI 结果）。
+- **应用事件**: `logger.info`（有意义的状态变更）。
+- **调试**: `logger.debug`（细粒度流程，默认关闭）。
+- **格式**: 有意义的日志加 emoji 前缀（如 `🔗`, `❌`, `✅`）。**禁止**在 `debug` 日志中使用 emoji。
 
-## Testing Approach
+## 测试策略
 
-### Philosophy
-- **Behavior-Driven**: Test observable contracts, not internal state.
-- **Levels**: E2E (highest value) > Integration > Unit (complex logic only).
-- **Files**:
-  - **Single File Policy**: `src/foo.ts` -> `src/foo.test.ts`. Combine unit and integration tests in one file.
-  - **No Fragmentation**: Do NOT create separate `*.integration.test.ts` or `*.spec.ts` files.
-  - **E2E**: Place system-wide end-to-end tests in `test/*-e2e.test.ts`.
+### 原则
+- **行为驱动**: 测试可观察的契约，不测内部状态。
+- **层级**: E2E（价值最高）> 集成 > 单元（仅复杂逻辑）。
+- **文件**:
+  - **单文件策略**: `src/foo.ts` -> `src/foo.test.ts`。单元测试和集成测试写在同一个文件中。
+  - **禁止拆分**: 不要创建单独的 `*.integration.test.ts` 或 `*.spec.ts` 文件。
+  - **E2E**: 系统级端到端测试放在 `test/*-e2e.test.ts`。
 
-### Best Practices
-- **Environment**: Node 22. Use `test/setup-env.ts` for polyfills.
-- **Isolation**: Each test should check **one** behavior.
-- **Performance**: Keep unit tests <100ms.
-- **Mocks**: Use `vi.mock()` sparingly; prefer real dependencies where feasible.
+### 最佳实践
+- **环境**: Node 22。使用 `test/setup-env.ts` 处理 polyfill。
+- **隔离**: 每个测试只检查**一个**行为。
+- **性能**: 单元测试控制在 100ms 以内。
+- **Mock**: 谨慎使用 `vi.mock()`，优先使用真实依赖。
 
-### Test Inventory
+### 测试清单
 
-Unit + integration tests live next to the code they cover (`src/foo.ts` ↔ `src/foo.test.ts`) — the single-file policy above. The table below catalogues the system-wide E2E suites under `test/`. Run a single suite with `npx vitest run test/<file>`.
+单元 + 集成测试与代码放在一起（`src/foo.ts` ↔ `src/foo.test.ts`）。下表为 `test/` 下的系统级 E2E 测试套件，用 `npx vitest run test/<file>` 运行单个套件。
 
-| Suite | Covers | Requirements | In default `npm test`? |
+| 套件 | 覆盖范围 | 前置条件 | 在 `npm test` 中? |
 |---|---|---|---|
-| `cli-e2e.test.ts` | CLI smoke: help, version, unknown-arg handling | none | yes |
-| `mcp-stdio-e2e.test.ts` | MCP server over stdio: spawn, protocol handshake, basic tools | none | yes |
-| `mcp-http-e2e.test.ts` | MCP server over HTTP/SSE (legacy `/sse` endpoint included) | none | yes |
-| `auth-e2e.test.ts` | OAuth2/OIDC end-to-end against a real provider | `.env` with auth config; skips otherwise | yes (skips if no env) |
-| `telemetry-e2e.test.ts` | `DOCS_MCP_TELEMETRY` env var controls PostHog init | none (parses debug logs) | yes |
-| `html-pipeline-basic-e2e.test.ts` | HTML scrape pipeline against stable endpoints (httpbin.org) | network | yes |
-| `html-pipeline-nonhtml-e2e.test.ts` | Non-HTML content (text/plain) bypasses Playwright cleanly | none | yes |
-| `html-pipeline-live-e2e.test.ts` | HTML pipeline against real documentation sites (anti-scrape, JS-heavy) | network; slow & flaky | **no** — `npm run test:live` |
-| `refresh-pipeline-e2e.test.ts` | Refresh handling: 200/304/404, broken links, etag flow | none (mock server) | yes |
-| `archive-integration.test.ts` | `LocalFileStrategy` archive (zip) traversal and extraction | fixture archive | yes |
-| `local-file-pdf-e2e.test.ts` | PDF in a `file://` directory is indexed alongside `.txt`/`.md` (regression for issue #394) | Kreuzberg native deps | yes |
-| `vector-persistence-e2e.test.ts` | Embeddings land in `documents_vec` virtual table | MSW-mocked OpenAI | yes |
-| `vector-search-e2e.test.ts` | Full pipeline: scrape → split → embed → index → search | MSW-mocked OpenAI | yes |
-| `github-private-repo-e2e.test.ts` | Auth flow for private GitHub repo scraping | `GITHUB_TOKEN`; skips otherwise | yes (skips if no token) |
-| `docker-e2e.test.ts` | Production image: non-root user, Chromium present, Playwright scrape, Kreuzberg PDF, bind-mounted docs folder recursively indexed via `file:///` | Docker daemon; `DOCKER_IMAGE_TAG` to reuse a prebuilt image | **no** — `npm run test:docker` |
+| `cli-e2e.test.ts` | CLI 冒烟：help、version、未知参数 | 无 | 是 |
+| `mcp-stdio-e2e.test.ts` | MCP stdio 协议：spawn、握手、基本工具 | 无 | 是 |
+| `mcp-http-e2e.test.ts` | MCP HTTP/SSE（含旧版 `/sse` 端点） | 无 | 是 |
+| `auth-e2e.test.ts` | OAuth2/OIDC 对接真实 Provider | `.env` 含 auth 配置；否则跳过 | 是（无配置则跳过） |
+| `telemetry-e2e.test.ts` | `DOCS_MCP_TELEMETRY` 环境变量控制 PostHog 初始化 | 无（解析 debug 日志） | 是 |
+| `html-pipeline-basic-e2e.test.ts` | HTML 抓取管线（httpbin.org） | 网络 | 是 |
+| `html-pipeline-nonhtml-e2e.test.ts` | 非 HTML 内容绕过 Playwright | 无 | 是 |
+| `html-pipeline-live-e2e.test.ts` | 真实文档站点抓取（反爬、JS 重） | 网络；慢且不稳定 | **否** — `npm run test:live` |
+| `refresh-pipeline-e2e.test.ts` | 刷新处理：200/304/404、断链、etag | 无（mock server） | 是 |
+| `archive-integration.test.ts` | `LocalFileStrategy` 归档（zip）遍历和提取 | fixture 归档 | 是 |
+| `local-file-pdf-e2e.test.ts` | `file://` 目录下 PDF 与 .txt/.md 一起索引（#394 回归） | Kreuzberg 原生依赖 | 是 |
+| `vector-persistence-e2e.test.ts` | Embedding 写入 `documents_vec` 虚拟表 | MSW mock OpenAI | 是 |
+| `vector-search-e2e.test.ts` | 全流程：抓取 → 分割 → 嵌入 → 索引 → 搜索 | MSW mock OpenAI | 是 |
+| `github-private-repo-e2e.test.ts` | 私有 GitHub 仓库抓取认证流程 | `GITHUB_TOKEN`；否则跳过 | 是（无 token 则跳过） |
+| `docker-e2e.test.ts` | 生产镜像：非 root 用户、Chromium、Playwright 抓取、Kreuzberg PDF、bind-mount 文档夹递归索引 | Docker daemon；`DOCKER_IMAGE_TAG` 可复用已有镜像 | **否** — `npm run test:docker` |
 
-Notes:
-- The "live" and "docker" suites are excluded from `npm test` / `npm run test:e2e` because they need external network or a Docker daemon. CI runs `docker-e2e.test.ts` in a dedicated `docker-test` job.
-- Suites that "skip gracefully" check for their required env at startup and short-circuit when it's missing — safe to leave in the default run.
-- Fixtures (sample PDF, docx, xlsx, archive, etc.) live in `test/fixtures/`. Reuse them rather than generating new files on the fly.
+备注:
+- "live" 和 "docker" 套件需要外部网络或 Docker daemon，排除在 `npm test` / `npm run test:e2e` 之外。CI 在专用 `docker-test` job 中运行 `docker-e2e.test.ts`。
+- "优雅跳过"的套件启动时检查所需环境变量，缺失则短路退出，留在默认运行中是安全的。
+- 测试固件（PDF、docx、xlsx、归档等）放在 `test/fixtures/`，复用已有固件，不要临时生成。
+
+## Docker 部署（WSL2）
+
+本项目在 WSL2 中以 Docker 容器运行，通过共享网络与 AIHelms 通信栈（LiteLLM 等）互联。
+
+### 服务架构
+
+`docker-compose.yml` 定义三个服务：worker（文档处理，8080）、mcp（MCP 协议端点，6280）、web（管理 UI，6281）。
+`docker-compose.wsl.yml` 覆盖层：禁用 web UI（`profiles: [web]`），将 mcp 服务桥接到 `aihelms_default` 外部网络，使 LiteLLM 可通过 `http://docs-mcp-server:6280/sse` 访问。
+
+### 部署命令
+
+**必须从本项目目录部署**，build 需要 Dockerfile。禁止使用 `AIHelms/docker/docs-mcp-server.yml`（单容器模式，缺少独立 worker）。
+
+前置条件：AIHelms middleware compose 必须先运行（创建 `aihelms_default` 网络）：
+```bash
+# AIHelms 目录
+docker compose -f docker-compose.middleware.yaml -p aihelms up -d
+```
+
+本项目的部署和更新：
+```bash
+# WSL2 中，本项目目录下
+cd /mnt/d/project/docs-mcp-server
+docker compose -f docker-compose.yml -f docker-compose.wsl.yml up -d --build
+```
+
+停止（不影响 AIHelms）：
+```bash
+docker compose -f docker-compose.yml -f docker-compose.wsl.yml down
+```
+
+### 验证
+
+```bash
+# 容器健康检查
+docker ps --filter "name=docs-mcp"
+
+# 从 LiteLLM 容器测试 MCP 连通性（预期输出 200）
+docker exec aihelms-litellm-1 python -c "import urllib.request; print(urllib.request.urlopen('http://docs-mcp-server:6280/sse', timeout=5).status)"
+```
