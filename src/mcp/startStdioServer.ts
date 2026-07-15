@@ -13,10 +13,10 @@ import type { McpServerTools } from "./tools";
  */
 export async function startStdioServer(
   tools: McpServerTools,
-  config: AppConfig,
+  _config: AppConfig,
 ): Promise<McpServer> {
   // Create a server instance using the factory and shared tools
-  const server = createMcpServerInstance(tools, config);
+  const server = createMcpServerInstance(tools);
 
   // Start server with Stdio transport
   const transport = new StdioServerTransport();

@@ -1,25 +1,17 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
-import { PipelineJobStatus } from "../pipeline/types";
 import { TelemetryEvent, telemetry } from "../telemetry";
-import type { JobInfo } from "../tools";
-import { ToolError } from "../tools/errors";
-import type { AppConfig } from "../utils/config";
-import { logger } from "../utils/logger";
 import type { McpServerTools } from "./tools";
 import { createError, createResponse } from "./utils";
 
 /**
  * Creates and configures an instance of the MCP server with registered tools and resources.
+ * Only search/retrieval tools are included; crawler and job management operations
+ * are exposed via the REST API at /api instead.
  * @param tools The shared tool instances to use for server operations.
- * @param config The application configuration.
  * @returns A configured McpServer instance.
  */
-export function createMcpServerInstance(
-  tools: McpServerTools,
-  config: AppConfig,
-): McpServer {
-  const readOnly = config.app.readOnly;
+export function createMcpServerInstance(tools: McpServerTools): McpServer {
   const server = new McpServer(
     {
       name: "docs-mcp-server",
@@ -33,155 +25,7 @@ export function createMcpServerInstance(
     },
   );
 
-  // --- Tool Definitions ---
-
-  // Only register write/job tools if not in read-only mode
-  if (!readOnly) {
-    // Scrape docs tool - suppress deep inference issues
-    server.tool(
-      "scrape_docs",
-      "Scrape and index documentation from a URL for a library. Use this tool to index a new library or a new version.",
-      {
-        url: z.string().url().describe("Documentation root URL to scrape."),
-        library: z.string().trim().describe("Library name."),
-        version: z.string().trim().optional().describe("Library version (optional)."),
-        maxPages: z
-          .number()
-          .optional()
-          .default(config.scraper.maxPages)
-          .describe(
-            `Maximum number of pages to scrape (default: ${config.scraper.maxPages}).`,
-          ),
-        maxDepth: z
-          .number()
-          .optional()
-          .default(config.scraper.maxDepth)
-          .describe(`Maximum navigation depth (default: ${config.scraper.maxDepth}).`),
-        scope: z
-          .enum(["subpages", "hostname", "domain"])
-          .optional()
-          .default("subpages")
-          .describe("Crawling boundary: 'subpages', 'hostname', or 'domain'."),
-        followRedirects: z
-          .boolean()
-          .optional()
-          .default(true)
-          .describe("Follow HTTP redirects (3xx responses)."),
-        preserveHashes: z
-          .boolean()
-          .optional()
-          .describe("Preserve hash fragments for hash-routed SPA documentation sites."),
-      },
-      {
-        title: "Scrape New Library Documentation",
-        destructiveHint: true, // replaces existing docs
-        openWorldHint: true, // requires internet access
-      },
-      async ({
-        url,
-        library,
-        version,
-        maxPages,
-        maxDepth,
-        scope,
-        followRedirects,
-        preserveHashes,
-      }) => {
-        // Track MCP tool usage
-        telemetry.track(TelemetryEvent.TOOL_USED, {
-          tool: "scrape_docs",
-          context: "mcp_server",
-          library,
-          version,
-          url: new URL(url).hostname, // Privacy-safe URL tracking
-          maxPages,
-          maxDepth,
-          scope,
-        });
-
-        try {
-          // Execute scrape tool without waiting and without progress callback
-          const result = await tools.scrape.execute({
-            url,
-            library,
-            version,
-            waitForCompletion: false, // Don't wait for completion
-            // onProgress: undefined, // Explicitly undefined or omitted
-            options: {
-              maxPages,
-              maxDepth,
-              scope,
-              followRedirects,
-              preserveHashes,
-            },
-          });
-
-          // Check the type of result
-          if ("jobId" in result) {
-            // If we got a jobId back, report that
-            return createResponse(`🚀 Scraping job started with ID: ${result.jobId}.`);
-          }
-          // This case shouldn't happen if waitForCompletion is false, but handle defensively
-          return createResponse(
-            `Scraping finished immediately (unexpectedly) with ${result.pagesScraped} pages.`,
-          );
-        } catch (error) {
-          // Handle errors during job *enqueueing* or initial setup
-          return createError(error);
-        }
-      },
-    );
-
-    // Refresh version tool - suppress deep inference issues
-    server.tool(
-      "refresh_version",
-      "Re-scrape a previously indexed library version, updating only changed pages.",
-      {
-        library: z.string().trim().describe("Library name."),
-        version: z
-          .string()
-          .trim()
-          .optional()
-          .describe("Library version (optional, refreshes latest if omitted)."),
-      },
-      {
-        title: "Refresh Library Version",
-        destructiveHint: false, // Only updates changed content
-        openWorldHint: true, // requires internet access
-      },
-      async ({ library, version }) => {
-        // Track MCP tool usage
-        telemetry.track(TelemetryEvent.TOOL_USED, {
-          tool: "refresh_version",
-          context: "mcp_server",
-          library,
-          version,
-        });
-
-        try {
-          // Execute refresh tool without waiting
-          const result = await tools.refresh.execute({
-            library,
-            version,
-            waitForCompletion: false, // Don't wait for completion
-          });
-
-          // Check the type of result
-          if ("jobId" in result) {
-            // If we got a jobId back, report that
-            return createResponse(`🔄 Refresh job started with ID: ${result.jobId}.`);
-          }
-          // This case shouldn't happen if waitForCompletion is false, but handle defensively
-          return createResponse(
-            `Refresh finished immediately (unexpectedly) with ${result.pagesRefreshed} pages.`,
-          );
-        } catch (error) {
-          // Handle errors during job enqueueing or initial setup
-          return createError(error);
-        }
-      },
-    );
-  }
+  // --- Tool Definitions (search/retrieval only) ---
 
   // Search docs tool
   server.tool(
@@ -320,154 +164,6 @@ ${r.content}\n`,
     },
   );
 
-  // Job and write tools - only available when not in read-only mode
-  if (!readOnly) {
-    // List jobs tool - suppress deep inference issues
-    server.tool(
-      "list_jobs",
-      "List all indexing jobs. Optionally filter by status.",
-      {
-        status: z
-          .enum(["queued", "running", "completed", "failed", "cancelling", "cancelled"])
-          .optional()
-          .describe("Filter jobs by status (optional)."),
-      },
-      {
-        title: "List Indexing Jobs",
-        readOnlyHint: true,
-        destructiveHint: false,
-      },
-      async ({ status }) => {
-        // Track MCP tool usage
-        telemetry.track(TelemetryEvent.TOOL_USED, {
-          tool: "list_jobs",
-          context: "mcp_server",
-          status,
-        });
-
-        try {
-          const result = await tools.listJobs.execute({
-            status: status as PipelineJobStatus | undefined,
-          });
-          // Format the simplified job list for display
-          const formattedJobs = result.jobs
-            .map(
-              (job: JobInfo) =>
-                `- ID: ${job.id}\n  Status: ${job.status}\n  Library: ${job.library}\n  Version: ${job.version}\n  Created: ${job.createdAt}${job.startedAt ? `\n  Started: ${job.startedAt}` : ""}${job.finishedAt ? `\n  Finished: ${job.finishedAt}` : ""}${job.error ? `\n  Error: ${job.error}` : ""}`,
-            )
-            .join("\n\n");
-          return createResponse(
-            result.jobs.length > 0
-              ? `Current Jobs:\n\n${formattedJobs}`
-              : "No jobs found.",
-          );
-        } catch (error) {
-          return createError(error);
-        }
-      },
-    );
-
-    // Get job info tool
-    server.tool(
-      "get_job_info",
-      "Get details for a specific indexing job. Use the 'list_jobs' tool to find the job ID.",
-      {
-        jobId: z.string().uuid().describe("Job ID to query."),
-      },
-      {
-        title: "Get Indexing Job Info",
-        readOnlyHint: true,
-        destructiveHint: false,
-      },
-      async ({ jobId }) => {
-        // Track MCP tool usage
-        telemetry.track(TelemetryEvent.TOOL_USED, {
-          tool: "get_job_info",
-          context: "mcp_server",
-          jobId,
-        });
-
-        try {
-          const result = await tools.getJobInfo.execute({ jobId });
-          // Tool now guarantees result.job is always present on success
-          const job = result.job;
-          const formattedJob = `- ID: ${job.id}\n  Status: ${job.status}\n  Library: ${job.library}@${job.version}\n  Created: ${job.createdAt}${job.startedAt ? `\n  Started: ${job.startedAt}` : ""}${job.finishedAt ? `\n  Finished: ${job.finishedAt}` : ""}${job.error ? `\n  Error: ${job.error}` : ""}`;
-          return createResponse(`Job Info:\n\n${formattedJob}`);
-        } catch (error) {
-          // Tool now throws error when job not found
-          return createError(error);
-        }
-      },
-    );
-
-    // Cancel job tool
-    server.tool(
-      "cancel_job",
-      "Cancel a queued or running indexing job. Use the 'list_jobs' tool to find the job ID.",
-      {
-        jobId: z.string().uuid().describe("Job ID to cancel."),
-      },
-      {
-        title: "Cancel Indexing Job",
-        destructiveHint: true,
-      },
-      async ({ jobId }) => {
-        // Track MCP tool usage
-        telemetry.track(TelemetryEvent.TOOL_USED, {
-          tool: "cancel_job",
-          context: "mcp_server",
-          jobId,
-        });
-
-        try {
-          const result = await tools.cancelJob.execute({ jobId });
-          // Tool now always returns success data or throws error
-          return createResponse(result.message);
-        } catch (error) {
-          // Catch any errors thrown by the tool (job not found, cancellation failed, etc.)
-          return createError(error);
-        }
-      },
-    );
-
-    // Remove docs tool
-    server.tool(
-      "remove_docs",
-      "Remove indexed documentation for a library version. Use only if explicitly instructed.",
-      {
-        library: z.string().trim().describe("Library name."),
-        version: z
-          .string()
-          .trim()
-          .optional()
-          .describe("Library version (optional, removes latest if omitted)."),
-      },
-      {
-        title: "Remove Library Documentation",
-        destructiveHint: true,
-      },
-      async ({ library, version }) => {
-        // Track MCP tool usage
-        telemetry.track(TelemetryEvent.TOOL_USED, {
-          tool: "remove_docs",
-          context: "mcp_server",
-          library,
-          version,
-        });
-
-        try {
-          // Execute the remove tool logic
-          const result = await tools.remove.execute({ library, version });
-          // Use the message from the tool's successful execution
-          return createResponse(result.message);
-        } catch (error) {
-          // Catch errors thrown by the RemoveTool's execute method
-          return createError(error);
-        }
-      },
-    );
-  }
-
   // Fetch URL tool
   server.tool(
     "fetch_url",
@@ -503,6 +199,8 @@ ${r.content}\n`,
       }
     },
   );
+
+  // --- Resource Definitions ---
 
   server.resource(
     "libraries",
@@ -546,111 +244,6 @@ ${r.content}\n`,
       };
     },
   );
-
-  // Job-related resources - only available when not in read-only mode
-  if (!readOnly) {
-    /**
-     * Resource handler for listing pipeline jobs.
-     * Supports filtering by status via a query parameter (e.g., ?status=running).
-     * URI: docs://jobs[?status=<status>]
-     */
-    server.resource(
-      "jobs",
-      "docs://jobs",
-      {
-        description: "List indexing jobs, optionally filtering by status.",
-        mimeType: "application/json",
-      },
-      async (uri: URL) => {
-        const statusParam = uri.searchParams.get("status");
-        let statusFilter: PipelineJobStatus | undefined;
-
-        // Validate status parameter if provided
-        if (statusParam) {
-          const validation = z.nativeEnum(PipelineJobStatus).safeParse(statusParam);
-          if (validation.success) {
-            statusFilter = validation.data;
-          } else {
-            // Handle invalid status - perhaps return an error or ignore?
-            // For simplicity, let's ignore invalid status for now and return all jobs.
-            // Alternatively, could throw an McpError or return specific error content.
-            logger.warn(`⚠️  Invalid status parameter received: ${statusParam}`);
-          }
-        }
-
-        // Fetch simplified jobs using the ListJobsTool
-        const result = await tools.listJobs.execute({ status: statusFilter });
-
-        return {
-          contents: result.jobs.map((job) => ({
-            uri: new URL(job.id, uri).href,
-            mimeType: "application/json",
-            text: JSON.stringify({
-              id: job.id,
-              library: job.library,
-              version: job.version,
-              status: job.status,
-              error: job.error || undefined,
-            }),
-          })),
-        };
-      },
-    );
-
-    /**
-     * Resource handler for retrieving a specific pipeline job by its ID.
-     * URI Template: docs://jobs/{jobId}
-     */
-    server.resource(
-      "job", // A distinct name for this specific resource type
-      new ResourceTemplate("docs://jobs/{jobId}", { list: undefined }),
-      {
-        description: "Get details for a specific indexing job by ID.",
-        mimeType: "application/json",
-      },
-      async (uri: URL, { jobId }) => {
-        // Validate jobId format if necessary (basic check)
-        if (typeof jobId !== "string" || jobId.length === 0) {
-          // Handle invalid jobId format - return empty or error
-          logger.warn(`⚠️  Invalid jobId received in URI: ${jobId}`);
-          return { contents: [] }; // Return empty content for invalid ID format
-        }
-
-        try {
-          // Fetch the simplified job info using GetJobInfoTool
-          const result = await tools.getJobInfo.execute({ jobId });
-
-          // Tool now guarantees result.job is always present on success
-          return {
-            contents: [
-              {
-                uri: uri.href,
-                mimeType: "application/json",
-                text: JSON.stringify({
-                  id: result.job.id,
-                  library: result.job.library,
-                  version: result.job.version,
-                  status: result.job.status,
-                  error: result.job.error || undefined,
-                }),
-              },
-            ],
-          };
-        } catch (error) {
-          if (error instanceof ToolError) {
-            // Expected error (job not found, etc.)
-            logger.warn(`⚠️  Job not found for resource request: ${jobId}`);
-          } else {
-            // Unexpected error
-            logger.error(
-              `❌ Unexpected error in job resource handler: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-          return { contents: [] };
-        }
-      },
-    );
-  }
 
   return server;
 }

@@ -2,32 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EventBusService } from "../events/EventBusService";
 import { EventType } from "../events/types";
 import { PipelineClient } from "./PipelineClient";
+import { PipelineJobStatus } from "./types";
 
-// Mock tRPC client factory
-const mockClient: any = {
-  ping: { query: vi.fn() },
-  enqueueScrapeJob: { mutate: vi.fn() },
-  enqueueRefreshJob: { mutate: vi.fn() },
-  getJob: { query: vi.fn() },
-  getJobs: { query: vi.fn() },
-  cancelJob: { mutate: vi.fn() },
-  clearCompletedJobs: { mutate: vi.fn() },
-};
-
-// Mock WebSocket client
-const mockWsClient = {
-  close: vi.fn(),
-};
-
-vi.mock("@trpc/client", () => {
-  return {
-    createTRPCProxyClient: () => mockClient,
-    httpBatchLink: vi.fn(),
-    createWSClient: vi.fn(() => mockWsClient),
-    wsLink: vi.fn(),
-    splitLink: vi.fn(),
-  } as any;
-});
+// Mock fetch globally
+const mockFetch = vi.fn();
+vi.stubGlobal("fetch", mockFetch);
 
 describe("PipelineClient", () => {
   let client: PipelineClient;
@@ -35,15 +14,13 @@ describe("PipelineClient", () => {
   const serverUrl = "http://localhost:8080";
 
   beforeEach(() => {
-    vi.resetAllMocks();
-    // Reset default mock behaviors
-    mockClient.ping.query.mockResolvedValue({ status: "ok" });
-    mockClient.enqueueScrapeJob.mutate.mockResolvedValue({ jobId: "job-123" });
-    mockClient.enqueueRefreshJob.mutate.mockResolvedValue({ jobId: "job-456" });
-    mockClient.getJob.query.mockResolvedValue(undefined);
-    mockClient.getJobs.query.mockResolvedValue({ jobs: [] });
-    mockClient.cancelJob.mutate.mockResolvedValue({ success: true });
-    mockClient.clearCompletedJobs.mutate.mockResolvedValue({ count: 5 });
+    vi.clearAllMocks();
+    // Default: health check returns ok
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: "ok" }),
+    });
     eventBus = new EventBusService();
     client = new PipelineClient(serverUrl, eventBus);
   });
@@ -51,11 +28,24 @@ describe("PipelineClient", () => {
   describe("start", () => {
     it("should succeed when external worker is healthy", async () => {
       await expect(client.start()).resolves.toBeUndefined();
-      expect(mockClient.ping.query).toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.objectContaining({ url: `${serverUrl}/api/health` }),
+      );
     });
 
     it("should fail when external worker is unreachable", async () => {
-      mockClient.ping.query.mockRejectedValueOnce(new Error("Connection refused"));
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        text: async () => "Service Unavailable",
+      });
+      await expect(client.start()).rejects.toThrow(
+        "Failed to connect to external worker",
+      );
+    });
+
+    it("should fail on network error", async () => {
+      mockFetch.mockRejectedValueOnce(new Error("Connection refused"));
       await expect(client.start()).rejects.toThrow(
         "Failed to connect to external worker",
       );
@@ -65,7 +55,11 @@ describe("PipelineClient", () => {
   describe("enqueueScrapeJob", () => {
     it("should delegate job creation to external API", async () => {
       const mockJobId = "job-123";
-      mockClient.enqueueScrapeJob.mutate.mockResolvedValueOnce({ jobId: mockJobId });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ jobId: mockJobId }),
+      });
+
       const jobId = await client.enqueueScrapeJob("react", "18.0.0", {
         url: "https://react.dev",
         library: "react",
@@ -73,23 +67,130 @@ describe("PipelineClient", () => {
       });
 
       expect(jobId).toBe(mockJobId);
-      expect(mockClient.enqueueScrapeJob.mutate).toHaveBeenCalledWith({
-        library: "react",
-        version: "18.0.0",
-        options: {
-          url: "https://react.dev",
-          library: "react",
-          version: "18.0.0",
-        },
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: `${serverUrl}/api/jobs/scrape`,
+          method: "POST",
+        }),
+      );
     });
 
     it("should handle API errors gracefully", async () => {
-      mockClient.enqueueScrapeJob.mutate.mockRejectedValueOnce(new Error("Bad request"));
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        text: async () => "Bad request",
+      });
 
       await expect(client.enqueueScrapeJob("invalid", null, {} as any)).rejects.toThrow(
-        "Failed to enqueue job: Bad request",
+        "Failed to enqueue job: HTTP 400",
       );
+    });
+  });
+
+  describe("enqueueRefreshJob", () => {
+    it("should delegate refresh job to external API", async () => {
+      const mockJobId = "job-456";
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ jobId: mockJobId }),
+      });
+
+      const jobId = await client.enqueueRefreshJob("react", "18.0.0");
+
+      expect(jobId).toBe(mockJobId);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: `${serverUrl}/api/jobs/refresh`,
+          method: "POST",
+        }),
+      );
+    });
+  });
+
+  describe("getJob", () => {
+    it("should return undefined for non-existent job (404)", async () => {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 404 });
+
+      const result = await client.getJob("non-existent");
+      expect(result).toBeUndefined();
+    });
+
+    it("should return job data for existing job", async () => {
+      const mockJob = {
+        id: "job-123",
+        status: "completed",
+        createdAt: "2023-01-01T00:00:00.000Z",
+        startedAt: null,
+        finishedAt: null,
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockJob,
+      });
+
+      const result = await client.getJob("job-123");
+      expect(result).toEqual(mockJob);
+    });
+  });
+
+  describe("getJobs", () => {
+    it("should return jobs list from external API", async () => {
+      const mockJobs = [{ id: "job-1", status: "completed" }];
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ jobs: mockJobs }),
+      });
+
+      const result = await client.getJobs();
+      expect(result).toEqual(mockJobs);
+    });
+
+    it("should pass status filter as query param", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ jobs: [] }),
+      });
+
+      await client.getJobs(PipelineJobStatus.RUNNING);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.objectContaining({ url: expect.stringContaining("status=running") }),
+      );
+    });
+  });
+
+  describe("cancelJob", () => {
+    it("should cancel job via external API", async () => {
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      await client.cancelJob("job-123");
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: `${serverUrl}/api/jobs/job-123/cancel`,
+          method: "POST",
+        }),
+      );
+    });
+
+    it("should throw on failed cancellation", async () => {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
+
+      await expect(client.cancelJob("job-123")).rejects.toThrow();
+    });
+  });
+
+  describe("clearCompletedJobs", () => {
+    it("should clear completed jobs via external API", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ count: 5 }),
+      });
+
+      const count = await client.clearCompletedJobs();
+      expect(count).toBe(5);
     });
   });
 
@@ -160,32 +261,6 @@ describe("PipelineClient", () => {
       }, 20);
 
       await expect(waitPromise).resolves.toBeUndefined();
-    });
-  });
-
-  describe("getJob", () => {
-    it("should return undefined for non-existent job", async () => {
-      mockClient.getJob.query.mockResolvedValueOnce(undefined);
-
-      const result = await client.getJob("non-existent");
-      expect(result).toBeUndefined();
-    });
-
-    it("should return job data for existing job", async () => {
-      // Mock returns a Date object (simulating superjson deserialization)
-      const mockJob = {
-        id: "job-123",
-        status: "completed",
-        createdAt: new Date("2023-01-01T00:00:00.000Z"),
-        startedAt: null,
-        finishedAt: null,
-        updatedAt: undefined,
-      };
-
-      mockClient.getJob.query.mockResolvedValueOnce(mockJob);
-
-      const result = await client.getJob("job-123");
-      expect(result).toEqual(mockJob);
     });
   });
 });

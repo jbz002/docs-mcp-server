@@ -1,23 +1,13 @@
 /**
- * tRPC client implementation of the Pipeline interface.
- * Delegates all pipeline operations to an external worker via tRPC router.
- * Uses WebSocket link for subscriptions and HTTP for queries/mutations.
+ * HTTP client implementation of the Pipeline interface.
+ * Delegates all pipeline operations to an external worker via REST API.
  */
 
-import {
-  createTRPCProxyClient,
-  createWSClient,
-  httpBatchLink,
-  splitLink,
-  wsLink,
-} from "@trpc/client";
-import superjson from "superjson";
 import type { EventBusService } from "../events/EventBusService";
 import { EventType } from "../events/types";
 import type { ScraperOptions } from "../scraper/types";
 import { logger } from "../utils/logger";
 import type { IPipeline } from "./trpc/interfaces";
-import type { PipelineRouter } from "./trpc/router";
 import type { PipelineJob, PipelineJobStatus, PipelineManagerCallbacks } from "./types";
 
 /**
@@ -25,49 +15,23 @@ import type { PipelineJob, PipelineJobStatus, PipelineManagerCallbacks } from ".
  */
 export class PipelineClient implements IPipeline {
   private readonly baseUrl: string;
-  private readonly wsUrl: string;
-  private readonly client: ReturnType<typeof createTRPCProxyClient<PipelineRouter>>;
-  private readonly wsClient: ReturnType<typeof createWSClient>;
   private readonly eventBus: EventBusService;
 
   constructor(serverUrl: string, eventBus: EventBusService) {
     this.baseUrl = serverUrl.replace(/\/$/, "");
     this.eventBus = eventBus;
 
-    // Extract base URL without the /api path for WebSocket connection
-    // The tRPC WebSocket adapter handles the /api routing internally
-    const url = new URL(this.baseUrl);
-    const baseWsUrl = `${url.protocol}//${url.host}`;
-    this.wsUrl = baseWsUrl.replace(/^http/, "ws");
-
-    // Create WebSocket client for subscriptions
-    this.wsClient = createWSClient({
-      url: this.wsUrl,
-    });
-
-    // Create tRPC client with split link:
-    // - Subscriptions use WebSocket
-    // - Queries and mutations use HTTP
-    this.client = createTRPCProxyClient<PipelineRouter>({
-      links: [
-        splitLink({
-          condition: (op) => op.type === "subscription",
-          true: wsLink({ client: this.wsClient, transformer: superjson }),
-          false: httpBatchLink({ url: this.baseUrl, transformer: superjson }),
-        }),
-      ],
-    });
-
-    logger.debug(
-      `PipelineClient (tRPC) created for: ${this.baseUrl} (ws: ${this.wsUrl})`,
-    );
+    logger.debug(`PipelineClient (REST) created for: ${this.baseUrl}`);
   }
 
   async start(): Promise<void> {
-    // Check connectivity via ping procedure
+    // Check connectivity via health endpoint
     try {
-      await this.client.ping.query();
-      logger.debug("PipelineClient connected to external worker via tRPC");
+      const response = await fetch(`${this.baseUrl}/api/health`);
+      if (!response.ok) {
+        throw new Error(`Health check returned ${response.status}`);
+      }
+      logger.debug("PipelineClient connected to external worker via REST");
     } catch (error) {
       throw new Error(
         `Failed to connect to external worker at ${this.baseUrl}: ${error instanceof Error ? error.message : String(error)}`,
@@ -76,9 +40,6 @@ export class PipelineClient implements IPipeline {
   }
 
   async stop(): Promise<void> {
-    // Close WebSocket connection
-    this.wsClient.close();
-
     logger.debug("PipelineClient stopped");
   }
 
@@ -92,11 +53,22 @@ export class PipelineClient implements IPipeline {
         typeof version === "string" && version.trim().length === 0
           ? null
           : (version ?? null);
-      const result = await this.client.enqueueScrapeJob.mutate({
-        library,
-        version: normalizedVersion,
-        options,
+      const response = await fetch(`${this.baseUrl}/api/jobs/scrape`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          library,
+          version: normalizedVersion,
+          options,
+        }),
       });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorBody}`);
+      }
+
+      const result = (await response.json()) as { jobId: string };
       logger.debug(`Job ${result.jobId} enqueued successfully`);
       return result.jobId;
     } catch (error) {
@@ -116,11 +88,22 @@ export class PipelineClient implements IPipeline {
         typeof version === "string" && version.trim().length === 0
           ? null
           : (version ?? null);
-      const result = await this.client.enqueueRefreshJob.mutate({
-        library,
-        version: normalizedVersion,
-        options,
+      const response = await fetch(`${this.baseUrl}/api/jobs/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          library,
+          version: normalizedVersion,
+          options,
+        }),
       });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorBody}`);
+      }
+
+      const result = (await response.json()) as { jobId: string };
       logger.debug(`Refresh job ${result.jobId} enqueued successfully`);
       return result.jobId;
     } catch (error) {
@@ -132,8 +115,14 @@ export class PipelineClient implements IPipeline {
 
   async getJob(jobId: string): Promise<PipelineJob | undefined> {
     try {
-      // superjson automatically deserializes Date objects
-      return await this.client.getJob.query({ id: jobId });
+      const response = await fetch(`${this.baseUrl}/api/jobs/${jobId}`);
+      if (response.status === 404) {
+        return undefined;
+      }
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return (await response.json()) as PipelineJob;
     } catch (error) {
       throw new Error(
         `Failed to get job ${jobId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -143,8 +132,15 @@ export class PipelineClient implements IPipeline {
 
   async getJobs(status?: PipelineJobStatus): Promise<PipelineJob[]> {
     try {
-      // superjson automatically deserializes Date objects
-      const result = await this.client.getJobs.query({ status });
+      const url = new URL(`${this.baseUrl}/api/jobs`);
+      if (status) {
+        url.searchParams.set("status", status);
+      }
+      const response = await fetch(url.toString());
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const result = (await response.json()) as { jobs: PipelineJob[] };
       return result.jobs || [];
     } catch (error) {
       logger.error(`❌ Failed to get jobs from external worker: ${error}`);
@@ -154,7 +150,12 @@ export class PipelineClient implements IPipeline {
 
   async cancelJob(jobId: string): Promise<void> {
     try {
-      await this.client.cancelJob.mutate({ id: jobId });
+      const response = await fetch(`${this.baseUrl}/api/jobs/${jobId}/cancel`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
       logger.debug(`Job cancelled via external worker: ${jobId}`);
     } catch (error) {
       logger.error(`❌ Failed to cancel job ${jobId} via external worker: ${error}`);
@@ -164,7 +165,13 @@ export class PipelineClient implements IPipeline {
 
   async clearCompletedJobs(): Promise<number> {
     try {
-      const result = await this.client.clearCompletedJobs.mutate();
+      const response = await fetch(`${this.baseUrl}/api/jobs/clear-completed`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const result = (await response.json()) as { count: number };
       logger.debug(`Cleared ${result.count} completed jobs via external worker`);
       return result.count || 0;
     } catch (error) {

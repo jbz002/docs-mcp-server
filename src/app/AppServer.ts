@@ -8,13 +8,12 @@ import formBody from "@fastify/formbody";
 import fastifyStatic from "@fastify/static";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
-import { WebSocketServer } from "ws";
 import { ProxyAuthManager } from "../auth";
 import type { EventBusService } from "../events";
 import { RemoteEventProxy } from "../events/RemoteEventProxy";
 import type { IPipeline } from "../pipeline/trpc/interfaces";
 import { cleanupMcpService, registerMcpService } from "../services/mcpService";
-import { applyTrpcWebSocketHandler, registerTrpcService } from "../services/trpcService";
+import { registerRestService } from "../services/restService";
 import { registerWebService } from "../services/webService";
 import { registerWorkerService, stopWorkerService } from "../services/workerService";
 import type { IDocumentManagement } from "../store/trpc/interfaces";
@@ -37,7 +36,6 @@ export class AppServer {
   private serverConfig: AppServerConfig;
   private readonly appConfig: AppConfig;
   private remoteEventProxy: RemoteEventProxy | null = null;
-  private wss: WebSocketServer | null = null;
 
   constructor(
     private docService: IDocumentManagement,
@@ -135,11 +133,6 @@ export class AppServer {
         host: this.appConfig.server.host,
       });
 
-      // Setup WebSocket server for tRPC subscriptions if API server is enabled
-      if (this.serverConfig.enableApiServer) {
-        this.setupWebSocketServer();
-      }
-
       // Connect to remote worker after server is fully started
       if (this.remoteEventProxy) {
         // Don't await - let it connect in the background
@@ -173,26 +166,6 @@ export class AppServer {
       // Cleanup MCP service if enabled
       if (this.mcpServer) {
         await cleanupMcpService(this.mcpServer);
-      }
-
-      // Close WebSocket server if it exists
-      if (this.wss) {
-        // Forcibly close all active client connections before closing the server
-        for (const client of this.wss.clients) {
-          client.terminate();
-        }
-
-        await new Promise<void>((resolve, reject) => {
-          this.wss?.close((err) => {
-            if (err) {
-              logger.error(`❌ Failed to close WebSocket server: ${err}`);
-              reject(err);
-            } else {
-              logger.debug("WebSocket server closed");
-              resolve();
-            }
-          });
-        });
       }
 
       // Track app shutdown
@@ -352,7 +325,7 @@ export class AppServer {
     }
 
     if (this.serverConfig.enableApiServer) {
-      await this.enableTrpcApi();
+      await this.enableRestApi();
     }
 
     if (this.serverConfig.enableWorker) {
@@ -405,7 +378,6 @@ export class AppServer {
     this.mcpServer = await registerMcpService(
       this.server,
       this.docService,
-      this.pipeline,
       this.appConfig,
       this.authManager || undefined,
     );
@@ -413,44 +385,11 @@ export class AppServer {
   }
 
   /**
-   * Enable Pipeline RPC (tRPC) service.
+   * Enable REST API service.
    */
-  private async enableTrpcApi(): Promise<void> {
-    await registerTrpcService(this.server, this.pipeline, this.docService, this.eventBus);
-    logger.debug("API server (tRPC) enabled");
-  }
-
-  /**
-   * Setup WebSocket server for tRPC subscriptions.
-   * This is called after the HTTP server is listening.
-   */
-  private setupWebSocketServer(): void {
-    // Ensure the underlying HTTP server is available
-    if (!this.server.server) {
-      throw new Error(
-        "Cannot setup WebSocket server: HTTP server not available. " +
-          "This method must be called after server.listen() completes.",
-      );
-    }
-
-    // Create WebSocket server attached to the HTTP server
-    this.wss = new WebSocketServer({
-      noServer: true,
-    });
-
-    // Handle HTTP upgrade requests for WebSocket connections
-    this.server.server.on("upgrade", (request, socket, head) => {
-      // Let the WebSocket server handle all upgrade requests.
-      // tRPC's WebSocket handler manages routing internally after connection is established.
-      this.wss?.handleUpgrade(request, socket, head, (ws) => {
-        this.wss?.emit("connection", ws, request);
-      });
-    });
-
-    // Apply tRPC WebSocket handler to enable subscriptions
-    applyTrpcWebSocketHandler(this.wss, this.pipeline, this.docService, this.eventBus);
-
-    logger.debug("WebSocket server initialized for tRPC subscriptions");
+  private async enableRestApi(): Promise<void> {
+    await registerRestService(this.server, this.pipeline, this.docService, this.eventBus);
+    logger.debug("REST API server enabled");
   }
 
   /**

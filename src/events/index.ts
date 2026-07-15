@@ -1,5 +1,11 @@
 export { EventBusService } from "./EventBusService";
 export {
+  convertToSsePayload,
+  registerSseListeners,
+  sendSseMessage,
+  startSseHeartbeat,
+} from "./sseUtils";
+export {
   type EventListener,
   type EventPayloads,
   EventType,

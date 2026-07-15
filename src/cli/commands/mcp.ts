@@ -184,7 +184,7 @@ export function createMcpCommand(cli: Argv) {
         if (resolvedProtocol === "stdio") {
           logger.debug(`Auto-detected stdio protocol (no TTY)`);
           await pipeline.start();
-          const mcpTools = await initializeTools(docService, pipeline, appConfig);
+          const mcpTools = await initializeTools(docService, appConfig);
           const mcpServer = await startStdioServer(mcpTools, appConfig);
 
           registerGlobalServices({

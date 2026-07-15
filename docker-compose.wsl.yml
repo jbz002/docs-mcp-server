@@ -1,0 +1,7 @@
+# WSL2 deployment — worker + mcp only (no web UI)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.wsl.yml up -d
+#
+services:
+  web:
+    profiles:
+      - web

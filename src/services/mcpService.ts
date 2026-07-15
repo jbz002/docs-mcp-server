@@ -11,7 +11,6 @@ import type { ProxyAuthManager } from "../auth";
 import { createAuthMiddleware } from "../auth/middleware";
 import { createMcpServerInstance } from "../mcp/mcpServer";
 import { initializeTools } from "../mcp/tools";
-import type { IPipeline } from "../pipeline/trpc/interfaces";
 import type { IDocumentManagement } from "../store/trpc/interfaces";
 import { telemetry } from "../telemetry";
 import type { AppConfig } from "../utils/config";
@@ -23,7 +22,6 @@ import { logger } from "../utils/logger";
  *
  * @param server The Fastify server instance
  * @param docService The document management service
- * @param pipeline The pipeline instance
  * @param config The resolved configuration from the entrypoint
  * @param authManager Optional authentication manager
  * @returns The McpServer instance for cleanup
@@ -31,13 +29,12 @@ import { logger } from "../utils/logger";
 export async function registerMcpService(
   server: FastifyInstance,
   docService: IDocumentManagement,
-  pipeline: IPipeline,
   config: AppConfig,
   authManager?: ProxyAuthManager,
 ): Promise<McpServer> {
   // Initialize MCP server and tools
-  const mcpTools = await initializeTools(docService, pipeline, config);
-  const mcpServer = createMcpServerInstance(mcpTools, config);
+  const mcpTools = await initializeTools(docService, config);
+  const mcpServer = createMcpServerInstance(mcpTools);
 
   // Setup auth middleware if auth manager is provided
   const authMiddleware = authManager ? createAuthMiddleware(authManager) : null;
@@ -62,7 +59,7 @@ export async function registerMcpService(
         const transport = new SSEServerTransport("/messages", reply.raw);
         sseTransports[transport.sessionId] = transport;
 
-        const sessionServer = createMcpServerInstance(mcpTools, config);
+        const sessionServer = createMcpServerInstance(mcpTools);
         sseServers[transport.sessionId] = sessionServer;
 
         // Log client connection (simple connection tracking without sessions)
@@ -158,7 +155,7 @@ export async function registerMcpService(
     handler: async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         // In stateless mode, create a new instance of server and transport for each request
-        const requestServer = createMcpServerInstance(mcpTools, config);
+        const requestServer = createMcpServerInstance(mcpTools);
         const requestTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: undefined,
         });

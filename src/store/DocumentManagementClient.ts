@@ -1,14 +1,12 @@
 /**
- * tRPC client for the document management API.
- * Implements IDocumentManagement and delegates to /api data router.
+ * HTTP client for the document management REST API.
+ * Implements IDocumentManagement and delegates to /api endpoints.
  */
-import { createTRPCProxyClient, httpBatchLink } from "@trpc/client";
-import superjson from "superjson";
+
 import type { ScraperOptions } from "../scraper/types";
 import { logger } from "../utils/logger";
 import type { EmbeddingModelConfig } from "./embeddings/EmbeddingConfig";
 import type { IDocumentManagement } from "./trpc/interfaces";
-import type { DataRouter } from "./trpc/router";
 import type {
   DbVersionWithLibrary,
   FindVersionResult,
@@ -20,25 +18,19 @@ import type {
 
 export class DocumentManagementClient implements IDocumentManagement {
   private readonly baseUrl: string;
-  private readonly client: ReturnType<typeof createTRPCProxyClient<DataRouter>>;
 
   constructor(serverUrl: string) {
     this.baseUrl = serverUrl.replace(/\/$/, "");
-    this.client = createTRPCProxyClient<DataRouter>({
-      links: [
-        httpBatchLink({
-          url: this.baseUrl,
-          transformer: superjson,
-        }),
-      ],
-    });
-    logger.debug(`DocumentManagementClient (tRPC) created for: ${this.baseUrl}`);
+    logger.debug(`DocumentManagementClient (REST) created for: ${this.baseUrl}`);
   }
 
   async initialize(): Promise<void> {
-    // Connectivity check using ping procedure
+    // Connectivity check using health endpoint
     try {
-      await this.client.ping.query();
+      const response = await fetch(`${this.baseUrl}/api/health`);
+      if (!response.ok) {
+        throw new Error(`Health check returned ${response.status}`);
+      }
     } catch (error) {
       logger.debug(
         `Failed to connect to DocumentManagement server at ${this.baseUrl}: ${error}`,
@@ -54,18 +46,32 @@ export class DocumentManagementClient implements IDocumentManagement {
   }
 
   async listLibraries(): Promise<LibrarySummary[]> {
-    return this.client.listLibraries.query();
+    return await this.get<LibrarySummary[]>("/api/libraries");
   }
 
   async validateLibraryExists(library: string): Promise<void> {
-    await this.client.validateLibraryExists.mutate({ library });
+    const response = await fetch(
+      `${this.baseUrl}/api/libraries/${encodeURIComponent(library)}/exists`,
+    );
+    if (response.status === 404) {
+      throw new Error(`Library "${library}" not found`);
+    }
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
   }
 
   async findBestVersion(
     library: string,
     targetVersion?: string,
   ): Promise<FindVersionResult> {
-    return this.client.findBestVersion.query({ library, targetVersion });
+    const url = new URL(
+      `${this.baseUrl}/api/libraries/${encodeURIComponent(library)}/versions/best`,
+    );
+    if (targetVersion) {
+      url.searchParams.set("targetVersion", targetVersion);
+    }
+    return await this.get<FindVersionResult>(url.toString());
   }
 
   async searchStore(
@@ -74,29 +80,48 @@ export class DocumentManagementClient implements IDocumentManagement {
     query: string,
     limit?: number,
   ): Promise<StoreSearchResult[]> {
-    return this.client.search.query({ library, version: version ?? null, query, limit });
+    const url = new URL(`${this.baseUrl}/api/search`);
+    url.searchParams.set("library", library);
+    if (version) {
+      url.searchParams.set("version", version);
+    }
+    url.searchParams.set("query", query);
+    if (limit) {
+      url.searchParams.set("limit", String(limit));
+    }
+    return await this.get<StoreSearchResult[]>(url.toString());
   }
 
   async removeVersion(library: string, version?: string | null): Promise<void> {
-    await this.client.removeVersion.mutate({ library, version });
+    await this.delete(
+      `/api/libraries/${encodeURIComponent(library)}/versions/${encodeURIComponent(version ?? "latest")}`,
+    );
   }
 
   async removeAllDocuments(library: string, version?: string | null): Promise<void> {
-    await this.client.removeAllDocuments.mutate({ library, version: version ?? null });
+    await this.delete(
+      `/api/libraries/${encodeURIComponent(library)}/versions/${encodeURIComponent(version ?? "latest")}/documents`,
+    );
   }
 
   async getVersionsByStatus(statuses: VersionStatus[]): Promise<DbVersionWithLibrary[]> {
-    return this.client.getVersionsByStatus.query({
-      statuses: statuses as unknown as string[],
-    });
+    const url = new URL(`${this.baseUrl}/api/versions`);
+    if (statuses.length > 0) {
+      url.searchParams.set("status", statuses.join(","));
+    }
+    return await this.get<DbVersionWithLibrary[]>(url.toString());
   }
 
   async findVersionsBySourceUrl(url: string): Promise<DbVersionWithLibrary[]> {
-    return this.client.findVersionsBySourceUrl.query({ url });
+    const fullUrl = new URL(`${this.baseUrl}/api/versions/by-url`);
+    fullUrl.searchParams.set("url", url);
+    return await this.get<DbVersionWithLibrary[]>(fullUrl.toString());
   }
 
   async getScraperOptions(versionId: number): Promise<StoredScraperOptions | null> {
-    return this.client.getScraperOptions.query({ versionId });
+    return await this.get<StoredScraperOptions | null>(
+      `/api/versions/${versionId}/options`,
+    );
   }
 
   async updateVersionStatus(
@@ -104,7 +129,10 @@ export class DocumentManagementClient implements IDocumentManagement {
     status: VersionStatus,
     errorMessage?: string,
   ): Promise<void> {
-    await this.client.updateVersionStatus.mutate({ versionId, status, errorMessage });
+    await this.put(`/api/versions/${versionId}/status`, {
+      status,
+      errorMessage: errorMessage ?? null,
+    });
   }
 
   async updateVersionProgress(
@@ -112,11 +140,11 @@ export class DocumentManagementClient implements IDocumentManagement {
     pages: number,
     maxPages: number,
   ): Promise<void> {
-    await this.client.updateVersionProgress.mutate({ versionId, pages, maxPages });
+    await this.put(`/api/versions/${versionId}/progress`, { pages, maxPages });
   }
 
   async storeScraperOptions(versionId: number, options: ScraperOptions): Promise<void> {
-    await this.client.storeScraperOptions.mutate({ versionId, options });
+    await this.put(`/api/versions/${versionId}/options`, options);
   }
 
   getActiveEmbeddingConfig(): EmbeddingModelConfig | null {
@@ -124,5 +152,35 @@ export class DocumentManagementClient implements IDocumentManagement {
     // The remote server's embedding status cannot be synchronously queried.
     // Return null to indicate embeddings status is unknown/unavailable.
     return null;
+  }
+
+  // ─── HTTP helpers ──────────────────────────────────────────────────
+
+  private async get<T>(path: string): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+    return (await response.json()) as T;
+  }
+
+  private async put(path: string, body: unknown): Promise<void> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+  }
+
+  private async delete(path: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
   }
 }
