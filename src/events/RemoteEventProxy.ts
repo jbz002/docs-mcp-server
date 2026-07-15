@@ -6,7 +6,9 @@
  * without needing to know about the remote worker's location or configuration.
  */
 
+import type { PipelineJob } from "../pipeline/types";
 import { logger } from "../utils/logger";
+import { restoreJobDates } from "./dateUtils";
 import type { EventBusService } from "./EventBusService";
 import { EventType } from "./types";
 
@@ -100,6 +102,10 @@ export class RemoteEventProxy {
               const internalEventType = mapSseNameToEventType(eventType);
               if (internalEventType) {
                 logger.debug(`Received remote event: ${eventType}`);
+                // SSE payloads from convertToSsePayload() contain flattened job fields.
+                // Restore Date strings back to Date objects before emitting to event bus,
+                // since downstream handlers (sseUtils, TelemetryService) call Date methods.
+                restoreJobDates(parsed as unknown as PipelineJob);
                 this.localEventBus.emit(internalEventType, parsed as never);
               }
             } catch (error) {

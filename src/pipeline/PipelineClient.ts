@@ -3,6 +3,7 @@
  * Delegates all pipeline operations to an external worker via REST API.
  */
 
+import { restoreJobDates } from "../events/dateUtils";
 import type { EventBusService } from "../events/EventBusService";
 import { EventType } from "../events/types";
 import type { ScraperOptions } from "../scraper/types";
@@ -122,7 +123,7 @@ export class PipelineClient implements IPipeline {
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      return (await response.json()) as PipelineJob;
+      return restoreJobDates((await response.json()) as PipelineJob);
     } catch (error) {
       throw new Error(
         `Failed to get job ${jobId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -141,7 +142,7 @@ export class PipelineClient implements IPipeline {
         throw new Error(`HTTP ${response.status}`);
       }
       const result = (await response.json()) as { jobs: PipelineJob[] };
-      return result.jobs || [];
+      return restoreJobDates(result.jobs || []);
     } catch (error) {
       logger.error(`❌ Failed to get jobs from external worker: ${error}`);
       throw error;
