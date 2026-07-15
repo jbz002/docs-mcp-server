@@ -65,13 +65,11 @@ export class DocumentManagementClient implements IDocumentManagement {
     library: string,
     targetVersion?: string,
   ): Promise<FindVersionResult> {
-    const url = new URL(
-      `${this.baseUrl}/api/libraries/${encodeURIComponent(library)}/versions/best`,
-    );
-    if (targetVersion) {
-      url.searchParams.set("targetVersion", targetVersion);
-    }
-    return await this.get<FindVersionResult>(url.toString());
+    const path = `/api/libraries/${encodeURIComponent(library)}/versions/best`;
+    const query = targetVersion
+      ? `?targetVersion=${encodeURIComponent(targetVersion)}`
+      : "";
+    return await this.get<FindVersionResult>(path + query);
   }
 
   async searchStore(
@@ -80,16 +78,10 @@ export class DocumentManagementClient implements IDocumentManagement {
     query: string,
     limit?: number,
   ): Promise<StoreSearchResult[]> {
-    const url = new URL(`${this.baseUrl}/api/search`);
-    url.searchParams.set("library", library);
-    if (version) {
-      url.searchParams.set("version", version);
-    }
-    url.searchParams.set("query", query);
-    if (limit) {
-      url.searchParams.set("limit", String(limit));
-    }
-    return await this.get<StoreSearchResult[]>(url.toString());
+    const params = new URLSearchParams({ library, query });
+    if (version) params.set("version", version);
+    if (limit) params.set("limit", String(limit));
+    return await this.get<StoreSearchResult[]>(`/api/search?${params}`);
   }
 
   async removeVersion(library: string, version?: string | null): Promise<void> {
@@ -105,17 +97,14 @@ export class DocumentManagementClient implements IDocumentManagement {
   }
 
   async getVersionsByStatus(statuses: VersionStatus[]): Promise<DbVersionWithLibrary[]> {
-    const url = new URL(`${this.baseUrl}/api/versions`);
-    if (statuses.length > 0) {
-      url.searchParams.set("status", statuses.join(","));
-    }
-    return await this.get<DbVersionWithLibrary[]>(url.toString());
+    const query = statuses.length > 0 ? `?status=${statuses.join(",")}` : "";
+    return await this.get<DbVersionWithLibrary[]>(`/api/versions${query}`);
   }
 
   async findVersionsBySourceUrl(url: string): Promise<DbVersionWithLibrary[]> {
-    const fullUrl = new URL(`${this.baseUrl}/api/versions/by-url`);
-    fullUrl.searchParams.set("url", url);
-    return await this.get<DbVersionWithLibrary[]>(fullUrl.toString());
+    return await this.get<DbVersionWithLibrary[]>(
+      `/api/versions/by-url?url=${encodeURIComponent(url)}`,
+    );
   }
 
   async getScraperOptions(versionId: number): Promise<StoredScraperOptions | null> {
