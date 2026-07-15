@@ -357,9 +357,7 @@ export const AppConfigSchema = z.object({
         .int()
         .min(1, "embedding dimension must be at least 1")
         .default(DEFAULT_CONFIG.embeddings.vectorDimension),
-      requestDimensions: envBoolean.default(
-        DEFAULT_CONFIG.embeddings.requestDimensions,
-      ),
+      requestDimensions: envBoolean.default(DEFAULT_CONFIG.embeddings.requestDimensions),
     })
     .default(DEFAULT_CONFIG.embeddings),
   db: z

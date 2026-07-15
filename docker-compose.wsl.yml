@@ -5,3 +5,12 @@ services:
   web:
     profiles:
       - web
+
+  mcp:
+    networks:
+      - default
+      - aihelms_default
+
+networks:
+  aihelms_default:
+    external: true
