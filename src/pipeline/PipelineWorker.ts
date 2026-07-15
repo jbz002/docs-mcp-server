@@ -15,6 +15,7 @@ import type { InternalPipelineJob } from "./types";
  */
 interface WorkerCallbacks {
   onJobProgress?: (job: InternalPipelineJob, progress: ScraperProgress) => Promise<void>;
+  onPageScraped?: (job: InternalPipelineJob, result: ScrapeResult) => Promise<void>;
   onJobError?: (
     job: InternalPipelineJob,
     error: Error,
@@ -52,7 +53,11 @@ export class PipelineWorker {
     try {
       // Clear existing documents for this library/version before scraping
       // Skip this step for refresh operations or if clean is explicitly false
-      if (!scraperOptions.isRefresh && scraperOptions.clean !== false) {
+      if (
+        !scraperOptions.isRefresh &&
+        scraperOptions.clean !== false &&
+        !scraperOptions.crawlOnly
+      ) {
         await this.store.removeAllDocuments(library, version);
         logger.info(
           `💾 Cleared store for ${library}@${version || "latest"} before scraping.`,
@@ -100,35 +105,39 @@ export class PipelineWorker {
           }
           // Handle successful content processing
           else if (progress.result) {
-            try {
-              // For refresh operations, delete old documents before adding new ones
-              if (progress.pageId) {
-                await this.store.deletePage(progress.pageId);
+            if (job.scraperOptions.crawlOnly) {
+              await callbacks.onPageScraped?.(job, progress.result);
+            } else {
+              try {
+                // For refresh operations, delete old documents before adding new ones
+                if (progress.pageId) {
+                  await this.store.deletePage(progress.pageId);
+                  logger.debug(
+                    `[${jobId}] Refreshing page ${progress.pageId}: ${progress.currentUrl}`,
+                  );
+                }
+
+                // Add the processed content to the store
+                await this.store.addScrapeResult(
+                  library,
+                  version,
+                  progress.depth,
+                  progress.result,
+                );
                 logger.debug(
-                  `[${jobId}] Refreshing page ${progress.pageId}: ${progress.currentUrl}`,
+                  `[${jobId}] Stored processed content: ${progress.currentUrl}`,
+                );
+              } catch (docError) {
+                logger.error(
+                  `❌ [${jobId}] Failed to process content ${progress.currentUrl}: ${docError}`,
+                );
+                // Report document-specific errors via manager's callback
+                await callbacks.onJobError?.(
+                  job,
+                  docError instanceof Error ? docError : new Error(String(docError)),
+                  progress.result,
                 );
               }
-
-              // Add the processed content to the store
-              await this.store.addScrapeResult(
-                library,
-                version,
-                progress.depth,
-                progress.result,
-              );
-              logger.debug(`[${jobId}] Stored processed content: ${progress.currentUrl}`);
-            } catch (docError) {
-              logger.error(
-                `❌ [${jobId}] Failed to process content ${progress.currentUrl}: ${docError}`,
-              );
-              // Report document-specific errors via manager's callback
-              await callbacks.onJobError?.(
-                job,
-                docError instanceof Error ? docError : new Error(String(docError)),
-                progress.result,
-              );
-              // Decide if a single document error should fail the whole job
-              // For now, we log and continue. To fail, re-throw here.
             }
           }
         },

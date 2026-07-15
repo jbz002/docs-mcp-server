@@ -388,7 +388,13 @@ export class AppServer {
    * Enable REST API service.
    */
   private async enableRestApi(): Promise<void> {
-    await registerRestService(this.server, this.pipeline, this.docService, this.eventBus);
+    await registerRestService(
+      this.server,
+      this.pipeline,
+      this.docService,
+      this.eventBus,
+      this.appConfig,
+    );
     logger.debug("REST API server enabled");
   }
 

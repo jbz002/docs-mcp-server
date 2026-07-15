@@ -4,7 +4,7 @@
  */
 
 import type { PipelineJob } from "../pipeline/types";
-import type { ScraperProgressEvent } from "../scraper/types";
+import type { ScrapeResult, ScraperProgressEvent } from "../scraper/types";
 
 /**
  * Event type enum used by the EventBusService.
@@ -15,6 +15,7 @@ export enum EventType {
   JOB_PROGRESS = "JOB_PROGRESS",
   LIBRARY_CHANGE = "LIBRARY_CHANGE",
   JOB_LIST_CHANGE = "JOB_LIST_CHANGE",
+  PAGE_SCRAPED = "PAGE_SCRAPED",
 }
 
 /**
@@ -26,6 +27,7 @@ export const ServerEventName = {
   [EventType.JOB_PROGRESS]: "job-progress",
   [EventType.LIBRARY_CHANGE]: "library-change",
   [EventType.JOB_LIST_CHANGE]: "job-list-change",
+  [EventType.PAGE_SCRAPED]: "page-scraped",
 } as const;
 
 /**
@@ -39,6 +41,10 @@ export interface EventPayloads {
   };
   [EventType.LIBRARY_CHANGE]: undefined;
   [EventType.JOB_LIST_CHANGE]: undefined;
+  [EventType.PAGE_SCRAPED]: {
+    job: PipelineJob;
+    result: ScrapeResult;
+  };
 }
 
 /**
@@ -77,6 +83,26 @@ export interface SseEventPayloads {
   };
   "library-change": Record<string, never>;
   "job-list-change": Record<string, never>;
+  "page-scraped": {
+    id: string;
+    library: string;
+    version: string | null;
+    page: {
+      url: string;
+      title: string;
+      sourceContentType: string;
+      contentType: string;
+      textContent: string;
+      links: string[];
+      chunks: Array<{
+        content: string;
+        types: string[];
+        section: { level: number; path: string[] };
+      }>;
+      etag?: string | null;
+      lastModified?: string | null;
+    };
+  };
 }
 
 /**

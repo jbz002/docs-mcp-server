@@ -648,6 +648,10 @@ export class PipelineManager implements IPipeline {
         onJobProgress: async (internalJob, progress) => {
           await this.updateJobProgress(internalJob, progress);
         },
+        onPageScraped: async (internalJob, result) => {
+          const publicJob = this.toPublicJob(internalJob);
+          this.eventBus.emit(EventType.PAGE_SCRAPED, { job: publicJob, result });
+        },
         onJobError: async (internalJob, error, document) => {
           // Log job errors
           logger.warn(

@@ -129,6 +129,12 @@ export interface ScraperOptions {
    * Internal-only allowlist roots for application-managed temporary files.
    */
   internalAllowedFileRoots?: string[];
+  /**
+   * When true, scrape and split pages but do NOT embed/store them in SQLite.
+   * Page results are emitted via SSE PAGE_SCRAPED events for external collection.
+   * @default false
+   */
+  crawlOnly?: boolean;
 }
 
 /**

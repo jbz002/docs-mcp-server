@@ -5,7 +5,7 @@
 
 import type { FastifyReply } from "fastify";
 import type { PipelineJob } from "../pipeline/types";
-import type { ScraperProgressEvent } from "../scraper/types";
+import type { ScrapeResult, ScraperProgressEvent } from "../scraper/types";
 import { logger } from "../utils/logger";
 import type { EventBusService } from "./EventBusService";
 import {
@@ -67,6 +67,30 @@ export function convertToSsePayload(
       return {} satisfies SseEventPayloads["job-list-change"];
     }
 
+    case EventType.PAGE_SCRAPED: {
+      const { job, result } = payload as { job: PipelineJob; result: ScrapeResult };
+      return {
+        id: job.id,
+        library: job.library,
+        version: job.version,
+        page: {
+          url: result.url,
+          title: result.title,
+          sourceContentType: result.sourceContentType,
+          contentType: result.contentType,
+          textContent: result.textContent,
+          links: result.links,
+          chunks: result.chunks.map((c) => ({
+            content: c.content,
+            types: c.types,
+            section: { level: c.section.level, path: c.section.path },
+          })),
+          etag: result.etag ?? null,
+          lastModified: result.lastModified ?? null,
+        },
+      } satisfies SseEventPayloads["page-scraped"];
+    }
+
     default: {
       // TypeScript ensures this is unreachable if all cases are handled
       const _exhaustive: never = eventType;
@@ -107,6 +131,7 @@ export function registerSseListeners(
     EventType.JOB_PROGRESS,
     EventType.LIBRARY_CHANGE,
     EventType.JOB_LIST_CHANGE,
+    EventType.PAGE_SCRAPED,
   ] as const;
 
   const unsubscribers: (() => void)[] = [];

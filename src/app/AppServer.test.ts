@@ -332,6 +332,7 @@ describe("AppServer Behavior Tests", () => {
         mockPipeline,
         mockDocService,
         eventBus,
+        appConfig,
       );
       expect(mockWebService.registerWebService).not.toHaveBeenCalled();
       expect(mockMcpService.registerMcpService).not.toHaveBeenCalled();
@@ -376,6 +377,7 @@ describe("AppServer Behavior Tests", () => {
         mockPipeline,
         mockDocService,
         eventBus,
+        appConfig,
       );
       expect(mockWorkerService.registerWorkerService).toHaveBeenCalledWith(mockPipeline);
     });
@@ -825,6 +827,7 @@ describe("AppServer Behavior Tests", () => {
         mockPipeline,
         mockDocService,
         eventBus,
+        appConfig,
       );
     });
 
