@@ -51,7 +51,7 @@ services:
         "--port",
         "6280",
         "--server-url",
-        "http://worker:8080/api",
+        "http://worker:8080",
         "--no-logo",
       ]
     container_name: docs-mcp-server
@@ -86,7 +86,7 @@ services:
         "--port",
         "6281",
         "--server-url",
-        "http://worker:8080/api",
+        "http://worker:8080",
         "--no-logo",
       ]
     container_name: docs-mcp-web
