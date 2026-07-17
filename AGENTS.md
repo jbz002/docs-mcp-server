@@ -162,6 +162,17 @@ cd /mnt/d/project/docs-mcp-server
 docker compose -f docker-compose.yml -f docker-compose.wsl.yml up -d --build
 ```
 
+### 快速热更新（仅代码变更）
+
+仅改 `src/` 时跳过 Docker build：本地编译，cp 进三个容器（文件系统独立，需各自 cp），秒级生效。
+
+```bash
+npm run build   # Windows 侧编译，Vite 缓存加速
+wsl bash -c 'for c in docs-mcp-server docs-mcp-web docs-mcp-worker; do docker cp /mnt/d/project/docs-mcp-server/dist/. $c:/app/dist/; docker cp /mnt/d/project/docs-mcp-server/public/. $c:/app/public/; done && docker restart docs-mcp-server docs-mcp-web docs-mcp-worker'
+```
+
+**注意**：修改 `package.json`（依赖变更）、`Dockerfile`、`db/` 等非 `src/` 文件时，仍需完整 Docker build。
+
 停止（不影响 AIHelms）：
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.wsl.yml down

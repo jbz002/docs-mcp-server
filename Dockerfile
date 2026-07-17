@@ -14,8 +14,9 @@ RUN apt-get update \
 # Build stage
 FROM base AS builder
 
-# Accept build argument for PostHog API key
+# Accept build arguments
 ARG POSTHOG_API_KEY
+ARG SOURCE_HASH=dev
 ENV POSTHOG_API_KEY=$POSTHOG_API_KEY
 
 # Copy package files
@@ -24,7 +25,7 @@ COPY package*.json ./
 # Install all dependencies (including dev dependencies for building)
 RUN npm ci
 
-# Copy source code
+# Copy source code (SOURCE_HASH busts cache when code changes)
 COPY . .
 
 # Build application
