@@ -259,7 +259,10 @@ export async function registerRestService(
     ) => {
       await handleRoute(reply, async () => {
         const { library, version } = request.params;
-        await docService.removeVersion(library, version);
+        await docService.removeVersion(
+          library,
+          version === "latest" ? undefined : version,
+        );
         return { ok: true };
       });
     },
@@ -273,7 +276,10 @@ export async function registerRestService(
     ) => {
       await handleRoute(reply, async () => {
         const { library, version } = request.params;
-        await docService.removeAllDocuments(library, version);
+        await docService.removeAllDocuments(
+          library,
+          version === "latest" ? undefined : version,
+        );
         return { ok: true };
       });
     },

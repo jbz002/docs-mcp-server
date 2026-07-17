@@ -688,8 +688,8 @@ export class PipelineManager implements IPipeline {
       } else {
         // Handle other errors
         const errorMessage = error instanceof Error ? error.message : String(error);
-        await this.updateJobStatus(job, PipelineJobStatus.FAILED, errorMessage);
         job.error = error instanceof Error ? error : new Error(String(error));
+        await this.updateJobStatus(job, PipelineJobStatus.FAILED, errorMessage);
         job.finishedAt = new Date();
         logger.error(`❌ Job failed: ${jobId}: ${job.error}`);
         job.rejectCompletion(job.error);
