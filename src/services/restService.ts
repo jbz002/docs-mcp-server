@@ -539,8 +539,10 @@ export async function registerRestService(
         .parse(body);
 
       const scrapeResults: ScrapeResult[] = [];
+      let totalChunks = 0;
       for (const doc of parsed.documents) {
         const chunks = await rawSplitter.splitText(doc.content, doc.contentType);
+        totalChunks += chunks.length;
         scrapeResults.push({
           url: doc.url,
           title: doc.title,
@@ -558,7 +560,7 @@ export async function registerRestService(
         parsed.version ?? null,
         scrapeResults,
       );
-      return { ingested: scrapeResults.length };
+      return { ingested: scrapeResults.length, chunks: totalChunks };
     });
   });
 
