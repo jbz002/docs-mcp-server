@@ -10,3 +10,7 @@ public/assets/
 .tsbuildinfo
 .claude/worktrees/
 .opencode/package-lock.json
+
+# Local tool artifacts
+.playwright-mcp/
+.vitest-config-mock/
