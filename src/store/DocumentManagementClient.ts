@@ -164,6 +164,19 @@ export class DocumentManagementClient implements IDocumentManagement {
     });
   }
 
+  async ensureLibraryAndVersion(library: string, version: string): Promise<number> {
+    const response = await fetch(`${this.baseUrl}/api/libraries/ensure`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ library, version: version || null }),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+    const data = (await response.json()) as { versionId: number };
+    return data.versionId;
+  }
+
   // ─── HTTP helpers ──────────────────────────────────────────────────
 
   private async get<T>(path: string): Promise<T> {

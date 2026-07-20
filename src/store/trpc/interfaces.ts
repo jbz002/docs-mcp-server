@@ -22,6 +22,7 @@ export interface IDocumentManagement {
   listLibraries(): Promise<LibrarySummary[]>;
   validateLibraryExists(library: string): Promise<void>;
   findBestVersion(library: string, targetVersion?: string): Promise<FindVersionResult>;
+  ensureLibraryAndVersion(library: string, version: string): Promise<number>;
 
   // Search & mutation used by tools/UI
   searchStore(

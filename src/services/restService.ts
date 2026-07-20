@@ -8,6 +8,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { EventBusService } from "../events";
 import { registerSseListeners, startSseHeartbeat } from "../events/sseUtils";
+import { EventType } from "../events/types";
 import type { IPipeline } from "../pipeline/trpc/interfaces";
 import { PipelineJobStatus } from "../pipeline/types";
 import { AutoDetectFetcher } from "../scraper/fetcher";
@@ -182,6 +183,28 @@ export async function registerRestService(
       return await docService.listLibraries();
     });
   });
+
+  // 确保库+版本存在（0 documents），用于上传"仅提取"注册库，使其出现在列表中
+  api.post(
+    "/api/libraries/ensure",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      await handleRoute(reply, async () => {
+        const body = request.body as Record<string, unknown>;
+        const parsed = z
+          .object({
+            library: nonEmptyTrimmed,
+            version: optionalTrimmed,
+          })
+          .parse(body);
+        const versionId = await docService.ensureLibraryAndVersion(
+          parsed.library,
+          parsed.version ?? "",
+        );
+        eventBus.emit(EventType.LIBRARY_CHANGE, undefined);
+        return { library: parsed.library, version: parsed.version ?? "", versionId };
+      });
+    },
+  );
 
   api.get(
     "/api/libraries/:library/versions/best",
