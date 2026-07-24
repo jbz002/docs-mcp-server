@@ -98,8 +98,10 @@ describe("MCP Service", () => {
     it("should register /mcp endpoint", async () => {
       const mcpServer = await registerMcpService(server, mockDocService, appConfig);
 
+      // Fastify 5.10+ lists all bound methods per route, so the /mcp endpoint
+      // renders as "cp (POST, GET, HEAD)" in the tree. Match the prefix only.
       const routes = server.printRoutes();
-      expect(routes).toContain("cp (POST)");
+      expect(routes).toContain("cp (POST");
 
       await cleanupMcpService(mcpServer);
     });
