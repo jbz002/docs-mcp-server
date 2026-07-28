@@ -168,8 +168,13 @@ docker compose -f docker-compose.yml -f docker-compose.wsl.yml up -d --build
 
 ```bash
 npm run build   # Windows 侧编译，Vite 缓存加速
-wsl bash -c 'for c in docs-mcp-server docs-mcp-web docs-mcp-worker; do docker cp /mnt/d/project/docs-mcp-server/dist/. $c:/app/dist/; docker cp /mnt/d/project/docs-mcp-server/public/. $c:/app/public/; done && docker restart docs-mcp-server docs-mcp-web docs-mcp-worker'
+wsl bash -lc 'docker cp /mnt/d/project/docs-mcp-server/dist/. docs-mcp-server:/app/dist/ && docker cp /mnt/d/project/docs-mcp-server/public/. docs-mcp-server:/app/public/ && docker cp /mnt/d/project/docs-mcp-server/dist/. docs-mcp-web:/app/dist/ && docker cp /mnt/d/project/docs-mcp-server/public/. docs-mcp-web:/app/public/ && docker cp /mnt/d/project/docs-mcp-server/dist/. docs-mcp-worker:/app/dist/ && docker cp /mnt/d/project/docs-mcp-server/public/. docs-mcp-worker:/app/public/ && docker restart docs-mcp-server docs-mcp-web docs-mcp-worker'
 ```
+
+**避坑**（从 Windows Git Bash 经 `wsl` 调用 Docker 时）：
+- **必须 `-l`（login shell）**：`bash -lc` 而非 `bash -c`，否则 WSL PATH 不含 `docker`，报 `command not found`。
+- **禁用 `$c` 循环变量**：`for c in ...; do ... $c ...` 中的 `$c` 经 `wsl bash -lc '...'` 调用层时被吞成空，导致 `docker cp` 报 `must specify at least one container source`。逐容器显式 `docker cp` 写全路径。
+- 其余 `docker compose`/`docker ps` 命令假设已在 WSL shell 内运行（PATH 自带 docker），无需 `wsl` 前缀。
 
 **注意**：修改 `package.json`（依赖变更）、`Dockerfile`、`db/` 等非 `src/` 文件时，仍需完整 Docker build。
 
