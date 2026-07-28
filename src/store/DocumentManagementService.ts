@@ -376,6 +376,27 @@ export class DocumentManagementService {
   }
 
   /**
+   * Deletes a single page (all chunks) by library+version+url.
+   * Vectors are cleaned automatically by the documents_vec delete trigger.
+   * @returns true if a page was found and deleted, false if no such page.
+   */
+  async deletePageByUrl(
+    library: string,
+    version: string | null | undefined,
+    url: string,
+  ): Promise<boolean> {
+    const normalizedVersion = this.normalizeVersion(version);
+    logger.info(
+      `🗑️ Removing single document ${url} from ${library}@${normalizedVersion || "latest"} store`,
+    );
+    const deleted = await this.store.deletePageByUrl(library, normalizedVersion, url);
+    if (deleted) {
+      this.eventBus.emit(EventType.LIBRARY_CHANGE, undefined);
+    }
+    return deleted;
+  }
+
+  /**
    * Retrieves all pages for a specific version ID with their metadata.
    * Used for refresh operations to get existing pages with their ETags and depths.
    */

@@ -1862,6 +1862,23 @@ export class DocumentStore {
   }
 
   /**
+   * Deletes a single page and all its document chunks by library+version+url.
+   * Vector rows are cleaned automatically by the documents_vec delete trigger.
+   * @returns true if a page was found and deleted, false if no such page.
+   */
+  async deletePageByUrl(library: string, version: string, url: string): Promise<boolean> {
+    const versionId = await this.resolveVersionId(library, version);
+    const page = this.statements.getPageId.get(versionId, url) as
+      | { id: number }
+      | undefined;
+    if (!page) {
+      return false;
+    }
+    await this.deletePage(page.id);
+    return true;
+  }
+
+  /**
    * Retrieves all pages for a specific version ID with their metadata.
    * Used for refresh operations to get existing pages with their ETags and depths.
    * @returns Array of page records

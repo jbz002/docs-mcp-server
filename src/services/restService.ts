@@ -308,6 +308,34 @@ export async function registerRestService(
     },
   );
 
+  // Delete a single document by url within a library version (二开新增).
+  // Vectors cleaned automatically by trigger. Distinguishes from the
+  // plural /documents route (which clears the whole version) by singular path.
+  api.delete(
+    "/api/libraries/:library/versions/:version/document",
+    async (
+      request: FastifyRequest<{
+        Params: { library: string; version: string };
+        Querystring: { url?: string };
+      }>,
+      reply: FastifyReply,
+    ) => {
+      await handleRoute(reply, async () => {
+        const { library, version } = request.params;
+        const url = request.query.url;
+        if (!url) {
+          throw new RestError("url query parameter is required", 400);
+        }
+        const deleted = await docService.deletePageByUrl(
+          library,
+          version === "latest" ? undefined : version,
+          url,
+        );
+        return { ok: true, deleted };
+      });
+    },
+  );
+
   api.get(
     "/api/versions",
     async (
@@ -584,6 +612,21 @@ export async function registerRestService(
         scrapeResults,
       );
       return { ingested: scrapeResults.length, chunks: totalChunks };
+    });
+  });
+
+  // 只分块不入库：上传"仅提取"对齐爬虫 crawlOnly 的分块计数
+  api.post("/api/split", async (request: FastifyRequest, reply: FastifyReply) => {
+    await handleRoute(reply, async () => {
+      const body = request.body as Record<string, unknown>;
+      const parsed = z
+        .object({
+          content: z.string().min(1),
+          contentType: z.string().optional().default("text/markdown"),
+        })
+        .parse(body);
+      const chunks = await rawSplitter.splitText(parsed.content, parsed.contentType);
+      return { chunks: chunks.length };
     });
   });
 
