@@ -13,6 +13,21 @@ import type {
   VersionStatus,
 } from "../types";
 
+export interface CrawlResultItem {
+  url: string;
+  title: string | null;
+  textContent: string | null;
+  contentType: string | null;
+  depth: number | null;
+}
+
+export interface CrawlResultsPage {
+  items: CrawlResultItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export interface IDocumentManagement {
   // Lifecycle
   initialize(): Promise<void>;
@@ -38,6 +53,16 @@ export interface IDocumentManagement {
     version: string | null | undefined,
     url: string,
   ): Promise<boolean>;
+
+  // crawlOnly raw result cache (二开新增) — AIHelms reads this to backfill
+  // pages lost during an SSE gap before re-ingest. Server-side persistence is
+  // written by the pipeline worker; this is the read path.
+  getCrawlResults(
+    library: string,
+    version: string | null | undefined,
+    page: number,
+    pageSize: number,
+  ): Promise<CrawlResultsPage>;
 
   // Minimal set used indirectly by pipeline/UI where needed
   getVersionsByStatus(statuses: VersionStatus[]): Promise<DbVersionWithLibrary[]>;

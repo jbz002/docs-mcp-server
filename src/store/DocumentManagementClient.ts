@@ -6,7 +6,7 @@
 import type { ScrapeResult, ScraperOptions } from "../scraper/types";
 import { logger } from "../utils/logger";
 import type { EmbeddingModelConfig } from "./embeddings/EmbeddingConfig";
-import type { IDocumentManagement } from "./trpc/interfaces";
+import type { CrawlResultsPage, IDocumentManagement } from "./trpc/interfaces";
 import type {
   DbVersionWithLibrary,
   FindVersionResult,
@@ -93,6 +93,21 @@ export class DocumentManagementClient implements IDocumentManagement {
   async removeAllDocuments(library: string, version?: string | null): Promise<void> {
     await this.delete(
       `/api/libraries/${encodeURIComponent(library)}/versions/${encodeURIComponent(version ?? "latest")}/documents`,
+    );
+  }
+
+  async getCrawlResults(
+    library: string,
+    version: string | null | undefined,
+    page: number,
+    pageSize: number,
+  ): Promise<CrawlResultsPage> {
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+    });
+    return await this.get<CrawlResultsPage>(
+      `/api/libraries/${encodeURIComponent(library)}/versions/${encodeURIComponent(version ?? "latest")}/crawl-results?${params}`,
     );
   }
 

@@ -574,4 +574,78 @@ export class DocumentManagementService {
   async getLibraryById(libraryId: number) {
     return this.store.getLibraryById(libraryId);
   }
+
+  /**
+   * Persists a crawlOnly raw result (page content cache). The version must
+   * already exist (crawlOnly job queueing creates it via ensureLibraryAndVersion).
+   * Upsert by (version, url); re-scrape overwrites. No event emitted (raw cache).
+   */
+  async upsertCrawlResult(
+    library: string,
+    version: string | null | undefined,
+    jobId: string | null,
+    depth: number | null,
+    result: ScrapeResult,
+  ): Promise<void> {
+    const normalizedVersion = this.normalizeVersion(version);
+    const versionId = await this.store.getVersionIdByName(library, normalizedVersion);
+    if (versionId === null) {
+      logger.warn(
+        `upsertCrawlResult: version ${library}@${normalizedVersion || "latest"} not found, skipping`,
+      );
+      return;
+    }
+    await this.store.upsertCrawlResult(versionId, jobId, depth, result);
+  }
+
+  /**
+   * Lists crawlOnly raw results for a version (paginated). Returns full text
+   * content so AIHelms can backfill pages lost during an SSE gap before ingest.
+   * Empty result if the version does not exist.
+   */
+  async getCrawlResults(
+    library: string,
+    version: string | null | undefined,
+    page: number,
+    pageSize: number,
+  ): Promise<{
+    items: Array<{
+      url: string;
+      title: string | null;
+      textContent: string | null;
+      contentType: string | null;
+      depth: number | null;
+    }>;
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    const normalizedVersion = this.normalizeVersion(version);
+    const versionId = await this.store.getVersionIdByName(library, normalizedVersion);
+    if (versionId === null) {
+      return { items: [], total: 0, page, pageSize };
+    }
+    const offset = Math.max(0, (page - 1) * pageSize);
+    const [items, total] = await Promise.all([
+      this.store.getCrawlResults(versionId, pageSize, offset),
+      this.store.countCrawlResults(versionId),
+    ]);
+    return { items, total, page, pageSize };
+  }
+
+  /**
+   * Clears crawlOnly raw results for a version. Called on crawlOnly job start
+   * so a fresh scrape does not retain stale pages from a prior run.
+   */
+  async clearCrawlResults(
+    library: string,
+    version: string | null | undefined,
+  ): Promise<void> {
+    const normalizedVersion = this.normalizeVersion(version);
+    const versionId = await this.store.getVersionIdByName(library, normalizedVersion);
+    if (versionId === null) {
+      return;
+    }
+    await this.store.clearCrawlResults(versionId);
+  }
 }

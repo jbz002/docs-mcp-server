@@ -154,6 +154,21 @@ export class DocumentStore {
     countVersionsByLibraryId: Database.Statement<[number]>;
     getVersionId: Database.Statement<[string, string]>;
     getPagesByVersionId: Database.Statement<[number]>;
+    // crawl_results (crawlOnly 原文缓存) statements
+    upsertCrawlResult: Database.Statement<
+      [
+        number,
+        string | null,
+        string,
+        string | null,
+        string | null,
+        string | null,
+        number | null,
+      ]
+    >;
+    getCrawlResultsByVersion: Database.Statement<[number, number, number]>;
+    countCrawlResults: Database.Statement<[number]>;
+    clearCrawlResultsByVersion: Database.Statement<[number]>;
   };
 
   /**
@@ -456,6 +471,34 @@ export class DocumentStore {
       ),
       getPagesByVersionId: this.db.prepare<[number]>(
         "SELECT * FROM pages WHERE version_id = ?",
+      ),
+      // crawl_results: crawlOnly 原文缓存（按 version_id+url 唯一），供 AIHelms 回补
+      upsertCrawlResult: this.db.prepare<
+        [
+          number,
+          string | null,
+          string,
+          string | null,
+          string | null,
+          string | null,
+          number | null,
+        ]
+      >(
+        `INSERT INTO crawl_results (version_id, job_id, url, title, text_content, content_type, depth)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(version_id, url) DO UPDATE SET
+           job_id = excluded.job_id, title = excluded.title, text_content = excluded.text_content,
+           content_type = excluded.content_type, depth = excluded.depth`,
+      ),
+      getCrawlResultsByVersion: this.db.prepare<[number, number, number]>(
+        `SELECT url, title, text_content AS textContent, content_type AS contentType, depth
+         FROM crawl_results WHERE version_id = ? ORDER BY id LIMIT ? OFFSET ?`,
+      ),
+      countCrawlResults: this.db.prepare<[number]>(
+        "SELECT COUNT(*) AS count FROM crawl_results WHERE version_id = ?",
+      ),
+      clearCrawlResultsByVersion: this.db.prepare<[number]>(
+        "DELETE FROM crawl_results WHERE version_id = ?",
       ),
     };
     this.statements = statements;
@@ -1152,6 +1195,19 @@ export class DocumentStore {
     });
 
     transaction();
+  }
+
+  /**
+   * Non-creating lookup of version_id by library+version name.
+   * Returns null when the version does not exist (unlike resolveVersionId,
+   * which creates it). Used for crawl_results reads/writes where the version
+   * is expected to already exist (crawlOnly created it during job queueing).
+   */
+  async getVersionIdByName(library: string, version: string): Promise<number | null> {
+    const row = this.statements.getVersionId.get(library.toLowerCase(), version) as
+      | { id: number }
+      | undefined;
+    return row?.id ?? null;
   }
 
   /**
@@ -1893,6 +1949,89 @@ export class DocumentStore {
   }
 
   /**
+   * Upserts a crawlOnly raw result (page content cache) for a version.
+   * Keyed by (version_id, url); re-scrape overwrites. depth passed separately
+   * (ScrapeResult carries no depth; it lives on the scraper progress event).
+   */
+  async upsertCrawlResult(
+    versionId: number,
+    jobId: string | null,
+    depth: number | null,
+    result: ScrapeResult,
+  ): Promise<void> {
+    try {
+      this.statements.upsertCrawlResult.run(
+        versionId,
+        jobId,
+        result.url,
+        result.title ?? null,
+        result.textContent ?? null,
+        result.contentType ?? null,
+        depth,
+      );
+    } catch (error) {
+      throw new ConnectionError("Failed to upsert crawl_result", error);
+    }
+  }
+
+  /**
+   * Lists crawlOnly raw results for a version (paginated), ordered by insert id.
+   * Returns full text content — AIHelms re-ingest needs the original text.
+   */
+  async getCrawlResults(
+    versionId: number,
+    limit: number,
+    offset: number,
+  ): Promise<
+    Array<{
+      url: string;
+      title: string | null;
+      textContent: string | null;
+      contentType: string | null;
+      depth: number | null;
+    }>
+  > {
+    try {
+      return this.statements.getCrawlResultsByVersion.all(
+        versionId,
+        limit,
+        offset,
+      ) as Array<{
+        url: string;
+        title: string | null;
+        textContent: string | null;
+        contentType: string | null;
+        depth: number | null;
+      }>;
+    } catch (error) {
+      throw new ConnectionError("Failed to get crawl_results", error);
+    }
+  }
+
+  async countCrawlResults(versionId: number): Promise<number> {
+    try {
+      const row = this.statements.countCrawlResults.get(versionId) as
+        | { count: number }
+        | undefined;
+      return row?.count ?? 0;
+    } catch (error) {
+      throw new ConnectionError("Failed to count crawl_results", error);
+    }
+  }
+
+  /**
+   * Clears all crawlOnly raw results for a version. Called on crawlOnly job start
+   * (fresh scrape) and on version removal.
+   */
+  async clearCrawlResults(versionId: number): Promise<void> {
+    try {
+      this.statements.clearCrawlResultsByVersion.run(versionId);
+    } catch (error) {
+      throw new ConnectionError("Failed to clear crawl_results", error);
+    }
+  }
+
+  /**
    * Completely removes a library version and all associated documents.
    * Optionally removes the library if no other versions remain.
    * @param library Library name
@@ -1937,6 +2076,9 @@ export class DocumentStore {
 
       // Delete all pages for this version (must be done after documents, before version)
       this.statements.deletePages.run(normalizedLibrary, normalizedVersion);
+
+      // Delete crawlOnly raw result cache for this version
+      this.statements.clearCrawlResultsByVersion.run(versionId);
 
       // Delete the version record
       const versionDeleteResult = this.statements.deleteVersionById.run(versionId);

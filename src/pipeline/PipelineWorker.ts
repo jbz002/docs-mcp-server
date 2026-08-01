@@ -63,6 +63,14 @@ export class PipelineWorker {
           `💾 Cleared store for ${library}@${version || "latest"} before scraping.`,
         );
       } else {
+        // crawlOnly: clear the raw result cache so a fresh scrape does not
+        // retain stale pages from a prior run (mirrors normal-mode removeAllDocuments)
+        if (scraperOptions.crawlOnly) {
+          await this.store.clearCrawlResults(library, version);
+          logger.info(
+            `💾 Cleared crawl_results cache for ${library}@${version || "latest"} before scraping.`,
+          );
+        }
         const message = scraperOptions.isRefresh
           ? `🔄 Refresh operation - preserving existing data for ${library}@${version || "latest"}.`
           : `💾 Appending to store for ${library}@${version || "latest"} (clean=false).`;
@@ -106,6 +114,16 @@ export class PipelineWorker {
           // Handle successful content processing
           else if (progress.result) {
             if (job.scraperOptions.crawlOnly) {
+              // Persist raw result so AIHelms can backfill pages lost during
+              // an SSE gap (SSE remains the live-progress channel; this is the
+              // authoritative content cache keyed by version_id+url).
+              await this.store.upsertCrawlResult(
+                library,
+                version,
+                jobId,
+                progress.depth ?? null,
+                progress.result,
+              );
               await callbacks.onPageScraped?.(job, progress.result);
             } else {
               try {

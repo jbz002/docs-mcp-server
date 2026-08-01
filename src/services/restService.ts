@@ -16,6 +16,10 @@ import type { ScrapeResult, ScraperOptions } from "../scraper/types";
 import { GreedySplitter } from "../splitter/GreedySplitter";
 import { SemanticMarkdownSplitter } from "../splitter/SemanticMarkdownSplitter";
 import type { Chunk } from "../splitter/types";
+import {
+  LibraryNotFoundInStoreError,
+  VersionNotFoundInStoreError,
+} from "../store/errors";
 import type { IDocumentManagement } from "../store/trpc/interfaces";
 import { FetchUrlTool } from "../tools/FetchUrlTool";
 import type { AppConfig } from "../utils/config";
@@ -56,6 +60,13 @@ async function handleRoute<T>(reply: FastifyReply, fn: () => Promise<T>): Promis
   } catch (error) {
     if (error instanceof RestError) {
       reply.status(error.statusCode).send({ error: error.message });
+    } else if (
+      error instanceof LibraryNotFoundInStoreError ||
+      error instanceof VersionNotFoundInStoreError
+    ) {
+      // Library/version absent in store (e.g. empty library shell) is a 404,
+      // not a server error — lets callers distinguish "missing" from "broken".
+      reply.status(404).send({ error: error.message });
     } else if (error instanceof z.ZodError) {
       reply.status(400).send({ error: "Validation failed", details: error.issues });
     } else {
@@ -332,6 +343,37 @@ export async function registerRestService(
           url,
         );
         return { ok: true, deleted };
+      });
+    },
+  );
+
+  // List crawlOnly raw results for a version (二开新增). Returns full text content
+  // so AIHelms can backfill pages lost during an SSE gap before re-ingest. SSE
+  // remains the live-progress channel; this endpoint is the authoritative content
+  // source for interrupt/resume.
+  api.get(
+    "/api/libraries/:library/versions/:version/crawl-results",
+    async (
+      request: FastifyRequest<{
+        Params: { library: string; version: string };
+        Querystring: { page?: string; pageSize?: string };
+      }>,
+      reply: FastifyReply,
+    ) => {
+      await handleRoute(reply, async () => {
+        const { library, version } = request.params;
+        const page = request.query.page
+          ? Math.max(1, Number.parseInt(request.query.page, 10))
+          : 1;
+        const pageSize = request.query.pageSize
+          ? Math.min(500, Math.max(1, Number.parseInt(request.query.pageSize, 10)))
+          : 100;
+        return await docService.getCrawlResults(
+          library,
+          version === "latest" ? undefined : version,
+          page,
+          pageSize,
+        );
       });
     },
   );
