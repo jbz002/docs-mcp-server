@@ -8,6 +8,7 @@ import {
   type MockedObject,
   vi,
 } from "vitest";
+import { defaults } from "../../utils/config";
 import { MARKDOWN_PREFERRED_ACCEPT } from "../fetcher/headers";
 import { ScrapeMode, type ScraperOptions } from "../types";
 import {
@@ -167,6 +168,7 @@ describe("HtmlPlaywrightMiddleware", () => {
       abortOnFailureRate: 0.5,
       preserveHashes: false,
       skipKnownTrackers: true,
+      siteAdapters: true,
       pageTimeoutMs: 5000,
       browserTimeoutMs: 30000,
       htmlExtractor: "cheerio" as const,
@@ -211,6 +213,66 @@ describe("HtmlPlaywrightMiddleware", () => {
 
   afterAll(async () => {
     await playwrightMiddleware.closeBrowser();
+  });
+
+  describe("Site adapter integration", () => {
+    it("forwards dingtalk noise selectors via excludeSelectors", async () => {
+      const html = "<html><body><p>doc</p></body></html>";
+      const context = createPipelineTestContext(
+        html,
+        "https://open.dingtalk.com/document/development/rsa",
+      );
+      const next = vi.fn();
+      const pageSpy = createMockPlaywrightPage(html);
+      const browserSpy = createMockBrowser(pageSpy);
+      const launchSpy = vi.spyOn(chromium, "launch").mockResolvedValue(browserSpy);
+
+      await playwrightMiddleware.process(context, next);
+
+      expect(context.options.excludeSelectors).toContain('[class*="treeMenu"]');
+      expect(context.options.excludeSelectors).toContain(".doc-right-wrapper");
+      expect(context.errors).toHaveLength(0);
+
+      launchSpy.mockRestore();
+    });
+
+    it("does not touch excludeSelectors for an unrelated host", async () => {
+      const html = "<html><body><p>doc</p></body></html>";
+      const context = createPipelineTestContext(html, "https://example.com/");
+      const next = vi.fn();
+      const pageSpy = createMockPlaywrightPage(html);
+      const browserSpy = createMockBrowser(pageSpy);
+      const launchSpy = vi.spyOn(chromium, "launch").mockResolvedValue(browserSpy);
+
+      await playwrightMiddleware.process(context, next);
+
+      expect(context.options.excludeSelectors).toEqual([]);
+
+      launchSpy.mockRestore();
+    });
+
+    it("skips the adapter when scraper.siteAdapters is disabled", async () => {
+      const mw = new HtmlPlaywrightMiddleware({
+        ...defaults.scraper,
+        siteAdapters: false,
+      });
+      const html = "<html><body><p>doc</p></body></html>";
+      const context = createPipelineTestContext(
+        html,
+        "https://open.dingtalk.com/document/development/rsa",
+      );
+      const next = vi.fn();
+      const pageSpy = createMockPlaywrightPage(html);
+      const browserSpy = createMockBrowser(pageSpy);
+      const launchSpy = vi.spyOn(chromium, "launch").mockResolvedValue(browserSpy);
+
+      await mw.process(context, next);
+
+      expect(context.options.excludeSelectors).toEqual([]);
+
+      launchSpy.mockRestore();
+      await mw.closeBrowser();
+    });
   });
 
   describe("Core functionality", () => {
@@ -1052,6 +1114,7 @@ describe("Route handling race condition protection", () => {
       abortOnFailureRate: 0.5,
       preserveHashes: false,
       skipKnownTrackers: true,
+      siteAdapters: true,
       pageTimeoutMs: 5000,
       browserTimeoutMs: 30000,
       htmlExtractor: "cheerio" as const,
@@ -1492,6 +1555,7 @@ describe("Route handling race condition protection", () => {
       abortOnFailureRate: 0.5,
       preserveHashes: false,
       skipKnownTrackers: true,
+      siteAdapters: true,
       pageTimeoutMs: 5000,
       browserTimeoutMs: 30000,
       htmlExtractor: "cheerio" as const,

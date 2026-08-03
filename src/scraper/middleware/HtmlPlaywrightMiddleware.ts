@@ -14,6 +14,7 @@ import { BrowserFetcher } from "../fetcher";
 import { withMarkdownPreferredAccept } from "../fetcher/headers";
 import { ScrapeMode } from "../types";
 import { SimpleMemoryCache } from "../utils/SimpleMemoryCache";
+import { getSiteAdapter } from "./siteAdapters";
 import { isBlockedSubresource } from "./subresourceBlocklist";
 import type { ContentProcessorMiddleware, MiddlewareContext } from "./types";
 
@@ -325,6 +326,90 @@ export class HtmlPlaywrightMiddleware implements ContentProcessorMiddleware {
       };
       
     `);
+  }
+
+  /**
+   * Applies a platform-specific site adapter (monaco fixup, container scroll,
+   * noise selectors) when the page's hostname matches a built-in adapter.
+   * No-op when `scraper.siteAdapters` is disabled or no adapter matches. Each
+   * fixup script is independently fault-tolerant: a failure is recorded but
+   * never aborts the page scrape.
+   */
+  private async applySiteAdapter(page: Page, context: MiddlewareContext): Promise<void> {
+    if (this.config.siteAdapters === false) return;
+    const adapter = getSiteAdapter(context.source);
+    if (!adapter) return;
+    logger.debug(`Applying site adapter "${adapter.id}" for ${context.source}`);
+
+    if (adapter.scrollContainerSelector) {
+      await this.scrollContainerIntoView(page, adapter.scrollContainerSelector);
+    }
+
+    for (const script of adapter.domFixScripts ?? []) {
+      try {
+        await script.run(page);
+        logger.debug(`Site adapter "${adapter.id}" ran "${script.id}"`);
+      } catch (error) {
+        logger.warn(
+          `⚠️  Site adapter "${adapter.id}" script "${script.id}" failed: ${error}`,
+        );
+        context.errors.push(
+          error instanceof Error
+            ? error
+            : new Error(`Site adapter ${script.id} failed: ${String(error)}`),
+        );
+      }
+    }
+
+    // Forward noise selectors to the downstream sanitizer (cheerio) rather than
+    // removing them here — reuses the existing removal path and unions with any
+    // user-provided selectors. New array to avoid mutating a shared options ref.
+    if (adapter.excludeSelectors && adapter.excludeSelectors.length > 0) {
+      const existing = context.options.excludeSelectors ?? [];
+      context.options.excludeSelectors = [...existing, ...adapter.excludeSelectors];
+    }
+  }
+
+  /**
+   * Scrolls an internal scroll container to the bottom then back to the top,
+   * triggering lazy-rendered content (monaco code blocks, images, sections)
+   * before DOM serialization. No-op when the container is absent, hidden, or
+   * shorter than its viewport.
+   */
+  private async scrollContainerIntoView(page: Page, selector: string): Promise<void> {
+    try {
+      const visible = await page.isVisible(selector).catch(() => false);
+      if (!visible) {
+        logger.debug(`Scroll container "${selector}" not visible; skip`);
+        return;
+      }
+      await page.evaluate(async (sel: string) => {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (!el) return;
+        if (el.scrollHeight <= el.clientHeight) return;
+        await new Promise<void>((resolve) => {
+          const step = Math.max(Math.floor(el.clientHeight * 0.9), 100);
+          const tick = (): void => {
+            const before = el.scrollTop;
+            el.scrollTop = Math.min(el.scrollTop + step, el.scrollHeight);
+            if (el.scrollTop !== before) {
+              window.setTimeout(tick, 50);
+            } else {
+              el.scrollTop = 0;
+              resolve();
+            }
+          };
+          tick();
+        });
+      }, selector);
+      await page
+        .waitForLoadState("networkidle", {
+          timeout: this.config.pageTimeoutMs,
+        })
+        .catch(() => {});
+    } catch (error) {
+      logger.debug(`Scroll container "${selector}" failed: ${error}`);
+    }
   }
 
   /**
@@ -1205,6 +1290,9 @@ export class HtmlPlaywrightMiddleware implements ContentProcessorMiddleware {
       await this.waitForLoadingToComplete(page);
       await this.waitForIframesToLoad(page);
       await this.waitForFramesetsToLoad(page);
+
+      // Apply platform-specific cleaning (e.g. DingTalk monaco code blocks)
+      await this.applySiteAdapter(page, context);
 
       // Extract content using shadow DOM-aware method
       const { content, method } = await this.extractContentWithShadowDOMSupport(page);

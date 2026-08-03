@@ -106,6 +106,7 @@ export const DEFAULT_CONFIG = {
     abortOnFailureRate: 0.5,
     preserveHashes: false,
     skipKnownTrackers: true,
+    siteAdapters: true,
     pageTimeoutMs: 5000,
     browserTimeoutMs: 30_000,
     htmlExtractor: "cheerio",
@@ -234,6 +235,7 @@ export const AppConfigSchema = z.object({
         .default(DEFAULT_CONFIG.scraper.abortOnFailureRate),
       preserveHashes: envBoolean.default(DEFAULT_CONFIG.scraper.preserveHashes),
       skipKnownTrackers: envBoolean.default(DEFAULT_CONFIG.scraper.skipKnownTrackers),
+      siteAdapters: envBoolean.default(DEFAULT_CONFIG.scraper.siteAdapters),
       pageTimeoutMs: z.coerce
         .number()
         .int()
