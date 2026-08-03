@@ -111,6 +111,27 @@ export class DocumentManagementClient implements IDocumentManagement {
     );
   }
 
+  async clearCrawlResults(
+    library: string,
+    version: string | null | undefined,
+  ): Promise<void> {
+    await this.delete(
+      `/api/libraries/${encodeURIComponent(library)}/versions/${encodeURIComponent(version ?? "latest")}/crawl-results`,
+    );
+  }
+
+  async deletePageByUrl(
+    library: string,
+    version: string | null | undefined,
+    url: string,
+  ): Promise<boolean> {
+    const path = `/api/libraries/${encodeURIComponent(library)}/versions/${encodeURIComponent(version ?? "latest")}/document`;
+    const result = await this.delete<{ ok: boolean; deleted: boolean }>(
+      `${path}?url=${encodeURIComponent(url)}`,
+    );
+    return result.deleted;
+  }
+
   async getVersionsByStatus(statuses: VersionStatus[]): Promise<DbVersionWithLibrary[]> {
     const query = statuses.length > 0 ? `?status=${statuses.join(",")}` : "";
     return await this.get<DbVersionWithLibrary[]>(`/api/versions${query}`);
@@ -224,12 +245,20 @@ export class DocumentManagementClient implements IDocumentManagement {
     }
   }
 
-  private async delete(path: string): Promise<void> {
+  private async delete<T = void>(path: string): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: "DELETE",
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${await response.text()}`);
     }
+    if (response.status === 204) {
+      return undefined as T;
+    }
+    const text = await response.text();
+    if (!text) {
+      return undefined as T;
+    }
+    return JSON.parse(text) as T;
   }
 }

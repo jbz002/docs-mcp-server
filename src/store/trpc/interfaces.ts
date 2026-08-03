@@ -64,6 +64,10 @@ export interface IDocumentManagement {
     pageSize: number,
   ): Promise<CrawlResultsPage>;
 
+  // Clear crawlOnly raw result cache for a version (二开新增). AIHelms clears
+  // dangling cache after a task is declared failed (job lost, no salvage data).
+  clearCrawlResults(library: string, version: string | null | undefined): Promise<void>;
+
   // Minimal set used indirectly by pipeline/UI where needed
   getVersionsByStatus(statuses: VersionStatus[]): Promise<DbVersionWithLibrary[]>;
   findVersionsBySourceUrl(url: string): Promise<DbVersionWithLibrary[]>;

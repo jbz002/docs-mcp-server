@@ -378,6 +378,28 @@ export async function registerRestService(
     },
   );
 
+  // Clear crawlOnly raw results for a version (二开新增). AIHelms 在任务判废
+  // (docs-mcp 重启 job 丢失且本地无 salvage 数据)后调此清理悬空缓存,避免与
+  // 未来同 version 爬取的 crawl_results 混淆。
+  api.delete(
+    "/api/libraries/:library/versions/:version/crawl-results",
+    async (
+      request: FastifyRequest<{
+        Params: { library: string; version: string };
+      }>,
+      reply: FastifyReply,
+    ) => {
+      await handleRoute(reply, async () => {
+        const { library, version } = request.params;
+        await docService.clearCrawlResults(
+          library,
+          version === "latest" ? undefined : version,
+        );
+        return { ok: true };
+      });
+    },
+  );
+
   api.get(
     "/api/versions",
     async (
