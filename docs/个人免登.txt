@@ -1,0 +1,350 @@
+![钉钉开放平台](https://gw.alicdn.com/imgextra/i1/O1CN01Flkd9L28UHshAeykK_!!6000000007935-2-tps-360-62.png)
+
+应用中心
+
+开发者文档
+
+开发助手![](https://gw.alicdn.com/imgextra/i1/O1CN01bmmsFS1K1gNjbWTrC_!!6000000001104-2-tps-144-48.png)
+
+[登录](https://login.dingtalk.com/oauth2/auth?redirect_uri=https%3A%2F%2Fopen.dingtalk.com%2Fdingtalk_sso_call_back%3Fcontinue%3Dhttps%3A%2F%2Fopen.dingtalk.com%2Fdocument%2Fdevelopment%2Fsignature-personal-registration&response_type=code&client_id=dingbakuoyxavyp5ruxw&scope=openid+corpid)
+
+文档中心
+
+｜
+
+应用开发
+
+开发指南
+
+服务端API
+
+客户端JSAPI
+
+事件订阅
+
+钉钉CLI
+
+API 调用指南
+
+事件订阅
+
+认证与授权
+
+应用授权
+
+通讯录管理
+
+考勤
+
+日程
+
+公告
+
+签到
+
+日志
+
+宜搭
+
+Agoal
+
+音视频
+
+AI 表格
+
+OA 审批
+
+文档/文件
+
+即时通信
+
+待办任务
+
+专属钉钉
+
+钉钉应用
+
+应用市场
+
+组织大脑
+
+智能人事
+
+智能招聘
+
+智能填表
+
+企业文化
+
+钉钉快办
+
+钉钉工作台
+
+行业与生态
+
+炼丹炉（模型服务）
+
+Teambition 项目管理
+
+更多开放
+
+签名计算方法
+
+个人免登场景的签名计算方法
+
+第三方访问接口的签名计算方法
+
+RSA私钥对参数进行签名
+
+平台公告与计费
+
+历史文档（不推荐）
+
+服务端 API签名计算方法个人免登场景的签名计算方法
+
+# 个人免登场景的签名计算方法
+
+![AI 智能摘要](https://gw.alicdn.com/imgextra/i4/O1CN01Zx4PED22rkUkmRe1L_!!6000000007174-2-tps-226-40.png)![\>](https://gw.alicdn.com/imgextra/i2/O1CN01UwOv1C27lrTuGFj2D_!!6000000007838-2-tps-17-30.png)
+
+更新于 2026-07-21本文介绍钉钉开放平台中个人免登场景下的签名计算方法，适用于需要通过扫码实现用户身份验证的小程序或第三方应用，该机制基于HmacSHA256算法生成安全签名，确保请求来源合法，常用于调用接口获取用户信息。
+
+## 前置条件
+
+1.  登录[钉钉开发者后台](https://open-dev.dingtalk.com/)，创建一个**扫码登录应用**。
+    
+2.  在应用详情页中，进入 **基础信息 > 凭证与基础信息**，获取appSecret。
+    
+
+## 签名计算方法
+
+签名采用 HmacSHA256 算法，以当前时间戳（timestamp）为待签名字符串，`appSecret`作为密钥进行加密计算，得到 Base64 编码的签名值后，再进行 urlencode 编码（含特殊字符转义），最终作为`signature`参数参与 HTTP 请求。
+
+**说明**
+
+-   请确保不要重复urlEncode。
+    
+-   推荐使用官方SDK，SDK中已集成签名算法。
+    
+
+## 签名参数说明
+
+|     |     |
+| --- | --- |
+| **参数** | **说明** |
+| accessKey | 扫码登录应用的appId。 |
+| timestamp | 当前时间戳,单位是毫秒。 |
+| signature | 通过appSecret计算出来的签名值，该参数值在HTTP请求参数中需要urlEncode(因为签名中可能包含特殊字符+)。 |
+
+## 签名计算代码示例（Java）
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+9
+
+10
+
+11
+
+12
+
+13
+
+14
+
+15
+
+16
+
+import org.apache.commons.codec.binary.Base64;
+
+   // 根据timestamp, appSecret计算签名值
+
+   String appSecret \= "testappSecret";
+
+   // 根据timestamp, appSecret计算签名值
+
+   String stringToSign \= "1546084445901";
+
+   Mac mac \= Mac.getInstance("HmacSHA256");
+
+   mac.init(new SecretKeySpec(appSecret.getBytes("UTF-8"), "HmacSHA256"));
+
+   byte\[\] signatureBytes \= mac.doFinal(stringToSign.getBytes("UTF-8"));
+
+   String signature \= new String(Base64.encodeBase64(signatureBytes));
+
+   if("".equals(signature)) {
+
+    return "";
+
+   }
+
+   String encoded \= URLEncoder.encode(signature, "UTF-8");
+
+   String urlEncodeSignature \= encoded.replace("+", "%20").replace("\*", "%2A").replace("~", "%7E").replace("/", "%2F");
+
+Enter to Rename, Shift+Enter to Preview
+
+## 签名计算代码示例（PHP）
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+<?php
+
+    // 根据timestamp, appSecret计算签名值
+
+    $s \= hash\_hmac('sha256', 'timestamp', 'appSecret', true);
+
+    $signature \= base64\_encode($s);
+
+    var\_dump($signature);
+
+    $urlencode\_signature \= urlencode($signature);
+
+    var\_dump($urlencode\_signature);
+
+?>
+
+Enter to Rename, Shift+Enter to Preview
+
+## CURL示例
+
+1
+
+curl 'https://oapi.dingtalk.com/sns/getuserinfo\_bycode?signature=xxxxxx&timestamp=1546084445901&accessKey=dingxxxxyyy' \-H "Content-Type:application/json" \-X POST \--data '{"tmp\_auth\_code":"tmp\_auth\_code"}'
+
+Enter to Rename, Shift+Enter to Preview
+
+## 验证结果
+
+成功调用`/sns/getuserinfo_bycode`接口后，将返回如下结构的 JSON 数据：
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+9
+
+10
+
+{
+
+  "errcode":0,
+
+  "user\_info":{
+
+    "nick":"名字",
+
+    "unionid":"dingdkjjojoixxxx",
+
+    "openid":"dingsdsqwlklklxxxx",
+
+    "main\_org\_auth\_high\_level":true
+
+  },
+
+  "errmsg":"ok"
+
+}
+
+Enter to Rename, Shift+Enter to Preview
+
+可通过以下方式验证是否成功：
+
+1.  检查 `errcode` 是否等于 `0`；
+    
+2.  查看返回的 `user_info.nick` 是否包含用户昵称；
+    
+3.  在应用日志中打印响应内容，确认数据可正常解析。
+    
+
+若出现错误，请参考[全局错误码](https://open.dingtalk.com/document/development/server-api-error-codes-1#)进行排查，常见问题包括：
+
+-   `invalid signature`：检查签名算法是否正确，注意时间戳未urlencode、特殊字符未转义等问题；
+    
+-   `invalid appid`：确认`accessKey`正确无误；
+    
+-   `request expired`：时间戳与服务器时间相差过久，请同步系统时间。
+    
+
+遇到其他问题？问问![AI](https://gw.alicdn.com/imgextra/i2/O1CN01IRtISO1hvJeLvBwMi_!!6000000004339-2-tps-72-72.png)钉钉开发助手
+
+如何计算钉钉开放平台API请求的签名（sign）![\>](https://img.alicdn.com/imgextra/i2/O1CN01lIEFYz1lHFTpu1MLd_!!6000000004793-2-tps-48-48.png)![\>](https://img.alicdn.com/imgextra/i4/O1CN01xqKqVA1svjnvuwepR_!!6000000005829-2-tps-48-48.png)
+
+钉钉开放平台API对timestamp参数的时间格式和时效性有何要求![\>](https://img.alicdn.com/imgextra/i2/O1CN01lIEFYz1lHFTpu1MLd_!!6000000004793-2-tps-48-48.png)![\>](https://img.alicdn.com/imgextra/i4/O1CN01xqKqVA1svjnvuwepR_!!6000000005829-2-tps-48-48.png)
+
+调用钉钉开放平台API返回invalid signature的常见原因及排查方法![\>](https://img.alicdn.com/imgextra/i2/O1CN01lIEFYz1lHFTpu1MLd_!!6000000004793-2-tps-48-48.png)![\>](https://img.alicdn.com/imgextra/i4/O1CN01xqKqVA1svjnvuwepR_!!6000000005829-2-tps-48-48.png)
+
+钉钉开放平台是否推荐使用官方SDK？各语言SDK的适用场景和优势是什么![\>](https://img.alicdn.com/imgextra/i2/O1CN01lIEFYz1lHFTpu1MLd_!!6000000004793-2-tps-48-48.png)![\>](https://img.alicdn.com/imgextra/i4/O1CN01xqKqVA1svjnvuwepR_!!6000000005829-2-tps-48-48.png)
+
+ [上一篇：常见问题](https://open.dingtalk.com/document/development/teambition-faq)[下一篇：第三方访问接口的签名计算方法](https://open.dingtalk.com/document/development/the-signature-calculation-method-of-the-third-party-access-interface) 
+
+本页内容
+
+前置条件
+
+签名计算方法
+
+签名参数说明
+
+签名计算代码示例（Java）
+
+签名计算代码示例（PHP）
+
+CURL示例
+
+验证结果
+
+![鼠标选中内容，AI智能解释](https://gw.alicdn.com/imgextra/i2/O1CN01oWGgE51qji9lhaeEf_!!6000000005532-2-tps-632-254.png)
+
+鼠标选中内容，AI智能解释
+
+选中存在疑惑的内容，即可快速唤起AI解释反馈
+
+![开发助手](https://gw.alicdn.com/imgextra/i2/O1CN01IRtISO1hvJeLvBwMi_!!6000000004339-2-tps-72-72.png)
+
+开发助手
+
+![AI](https://gw.alicdn.com/imgextra/i2/O1CN01dsAxnc28DLFNCEhSc_!!6000000007898-2-tps-72-65.png) 智能解释
+
+![](https://img.alicdn.com/imgextra/i2/O1CN01nfMLjd1J3gVl8RKuB_!!6000000000973-2-tps-200-200.png) 文档反馈
