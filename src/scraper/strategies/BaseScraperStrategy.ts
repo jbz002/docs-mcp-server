@@ -10,6 +10,7 @@ import { normalizeUrl, type UrlNormalizerOptions } from "../../utils/url";
 import { FetchStatus } from "../fetcher/types";
 import type { PipelineResult } from "../pipelines/types";
 import type {
+  PauseController,
   QueueItem,
   ScrapeResult,
   ScraperOptions,
@@ -456,6 +457,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal, // Add signal
+    pauseController?: PauseController,
   ): Promise<void> {
     this.visited.clear();
     this.pageCount = 0;
@@ -520,6 +522,31 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
         throw new CancellationError(
           `${isRefreshMode ? "Refresh" : "Scraping"} cancelled by signal`,
         );
+      }
+
+      // Cooperative pause: if requested, suspend at the loop head until resumed.
+      // Cancel-during-pause rejects the gate with CancellationError → throws here
+      // → _runJob marks the job CANCELLED.
+      if (pauseController?.requested) {
+        logger.debug(
+          `${isRefreshMode ? "Refresh" : "Scraping"} paused, awaiting resume.`,
+        );
+        try {
+          await pauseController.gate;
+        } catch (error) {
+          // Gate rejected (cancel during pause): surface as cancellation.
+          throw error instanceof CancellationError
+            ? error
+            : new CancellationError(
+                `${isRefreshMode ? "Refresh" : "Scraping"} cancelled while paused`,
+              );
+        }
+        // Resumed: re-check cancellation before continuing.
+        if (signal?.aborted) {
+          throw new CancellationError(
+            `${isRefreshMode ? "Refresh" : "Scraping"} cancelled by signal after resume`,
+          );
+        }
       }
 
       const remainingPages = maxPages - this.pageCount;

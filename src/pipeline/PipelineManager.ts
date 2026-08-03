@@ -235,6 +235,7 @@ export class PipelineManager implements IPipeline {
     library: string,
     version: string | undefined | null,
     options: ScraperOptions,
+    init?: { isResume?: boolean },
   ): Promise<string> {
     // Normalize version: treat undefined/null as "" (unversioned)
     const normalizedVersion = version ?? "";
@@ -282,6 +283,8 @@ export class PipelineManager implements IPipeline {
       completionPromise,
       resolveCompletion,
       rejectCompletion,
+      pauseController: this.createPauseController(),
+      isResume: init?.isResume ?? false,
       // Database fields (single source of truth)
       // Will be populated by updateJobStatus
       progressPages: 0,
@@ -417,7 +420,7 @@ export class PipelineManager implements IPipeline {
   async enqueueJobWithStoredOptions(
     library: string,
     version: string | undefined | null,
-    options?: Pick<ScraperOptions, "preserveHashes">,
+    options?: { preserveHashes?: boolean; resume?: boolean },
   ): Promise<string> {
     const normalizedVersion = version ?? "";
 
@@ -452,7 +455,9 @@ export class PipelineManager implements IPipeline {
         `🔄 Re-indexing ${library}@${normalizedVersion || "latest"} with stored options from ${stored.sourceUrl}`,
       );
 
-      return this.enqueueScrapeJob(library, normalizedVersion, completeOptions);
+      return this.enqueueScrapeJob(library, normalizedVersion, completeOptions, {
+        isResume: options?.resume === true,
+      });
     } catch (error) {
       logger.error(`❌ Failed to enqueue job with stored options: ${error}`);
       throw error;
@@ -531,6 +536,26 @@ export class PipelineManager implements IPipeline {
         // The worker is responsible for transitioning to CANCELLED and rejecting
         break;
 
+      case PipelineJobStatus.PAUSED:
+        // Worker either awaits the pause gate (running-paused) or is idle (queued-paused)
+        if (this.activeWorkers.has(jobId)) {
+          await this.updateJobStatus(job, PipelineJobStatus.CANCELLING);
+          job.abortController.abort();
+          // Unblock the worker suspended on the gate so it tears down as CANCELLED
+          job.pauseController?.reject(
+            new CancellationError("Job cancelled while paused"),
+          );
+        } else {
+          // Queued-paused: no worker running, finalize directly
+          await this.updateJobStatus(job, PipelineJobStatus.CANCELLED);
+          job.finishedAt = new Date();
+          job.rejectCompletion(
+            new PipelineStateError("Job cancelled while paused (queued)"),
+          );
+        }
+        logger.info(`🚫 Job cancelled while paused: ${jobId}`);
+        break;
+
       case PipelineJobStatus.COMPLETED:
       case PipelineJobStatus.FAILED:
       case PipelineJobStatus.CANCELLED:
@@ -544,6 +569,123 @@ export class PipelineManager implements IPipeline {
         logger.error(`❌ Unhandled job status for cancellation: ${job.status}`);
         break;
     }
+  }
+
+  /**
+   * Requests a cooperative pause for a queued or running job.
+   * - QUEUED: removed from queue, marked PAUSED (resume re-queues).
+   * - RUNNING: arms a fresh pause gate (worker suspends at loop head), marked PAUSED.
+   * Returns {live:false} when no in-memory job exists (e.g. process restarted);
+   * caller should then re-enqueue via resumeJob.
+   */
+  async pauseJob(jobId: string): Promise<{ live: boolean }> {
+    const job = this.jobMap.get(jobId);
+    if (!job) {
+      logger.warn(`❓ Attempted to pause non-existent job: ${jobId}`);
+      return { live: false };
+    }
+
+    switch (job.status) {
+      case PipelineJobStatus.QUEUED:
+        this.jobQueue = this.jobQueue.filter((id) => id !== jobId);
+        await this.updateJobStatus(job, PipelineJobStatus.PAUSED);
+        logger.info(`⏸️ Job paused (was queued): ${jobId}`);
+        break;
+
+      case PipelineJobStatus.RUNNING:
+        // Arm a fresh gate the worker will await at the next loop head.
+        if (job.pauseController) {
+          this.armPauseGate(job.pauseController);
+        }
+        await this.updateJobStatus(job, PipelineJobStatus.PAUSED);
+        logger.info(`⏸️ Job pause requested (running): ${jobId}`);
+        break;
+
+      default:
+        logger.warn(
+          `⚠️  Job ${jobId} cannot be paused in its current state: ${job.status}`,
+        );
+        break;
+    }
+    return { live: true };
+  }
+
+  /**
+   * Resumes a paused job, or re-enqueues it after a process restart.
+   * - Live PAUSED job with an active worker: resolve the gate, worker continues.
+   * - Live PAUSED job with no worker (was queued-paused): re-queue.
+   * - No live job (process restarted): re-enqueue with isResume so crawl_results
+   *   cache is preserved and already-crawled URLs seed `visited` (skip re-scrape).
+   * Returns {live:true} when the in-memory job resumed, else {live:false, jobId}
+   * with the freshly enqueued job id (caller must persist the new id).
+   */
+  async resumeJob(
+    jobId: string,
+    ref: { library: string; version: string | undefined | null },
+  ): Promise<{ live: boolean; jobId?: string }> {
+    const job = this.jobMap.get(jobId);
+    if (job && job.status === PipelineJobStatus.PAUSED) {
+      if (this.activeWorkers.has(jobId)) {
+        // Running-paused: worker is suspended awaiting the gate → unblock it.
+        if (job.pauseController) {
+          job.pauseController.requested = false;
+          job.pauseController.resolve();
+        }
+        await this.updateJobStatus(job, PipelineJobStatus.RUNNING);
+        logger.info(`▶️ Job resumed (was running-paused): ${jobId}`);
+      } else {
+        // Queued-paused: put back on the queue for dispatch.
+        if (job.pauseController) {
+          job.pauseController.requested = false;
+        }
+        this.jobQueue.push(jobId);
+        await this.updateJobStatus(job, PipelineJobStatus.QUEUED);
+        if (this.isRunning) {
+          this._processQueue().catch((error) => {
+            logger.error(`❌ Error in processQueue during resume: ${error}`);
+          });
+        }
+        logger.info(`▶️ Job re-queued (was queued-paused): ${jobId}`);
+      }
+      return { live: true };
+    }
+
+    // No live job (process restarted while paused) → re-enqueue with resume.
+    const newJobId = await this.enqueueJobWithStoredOptions(ref.library, ref.version, {
+      resume: true,
+    });
+    logger.info(`▶️ Job ${jobId} re-enqueued after restart as ${newJobId} (resume mode)`);
+    return { live: false, jobId: newJobId };
+  }
+
+  /**
+   * Builds a fresh unresolved pause gate and marks the controller requested.
+   * Called when pausing a RUNNING job; the worker awaits `gate` at the loop head.
+   */
+  private armPauseGate(pc: import("../scraper/types").PauseController): void {
+    let resolve!: () => void;
+    let reject!: (reason?: unknown) => void;
+    const gate = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    // Swallow unhandled rejection if cancel never fires after a resume re-arm.
+    gate.catch(() => {});
+    pc.gate = gate;
+    pc.resolve = resolve;
+    pc.reject = reject;
+    pc.requested = true;
+  }
+
+  /** Constructs a PauseController in the unpaused (running) state. */
+  private createPauseController(): import("../scraper/types").PauseController {
+    const pc = {
+      requested: false,
+      gate: Promise.resolve(),
+      resolve: () => {},
+      reject: () => {},
+    };
+    return pc;
   }
 
   /**
@@ -720,6 +862,8 @@ export class PipelineManager implements IPipeline {
         return VersionStatus.CANCELLED;
       case PipelineJobStatus.CANCELLING:
         return VersionStatus.RUNNING; // Keep as running in DB until actually cancelled
+      case PipelineJobStatus.PAUSED:
+        return VersionStatus.PAUSED;
       default:
         return VersionStatus.NOT_INDEXED;
     }

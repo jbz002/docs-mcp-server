@@ -94,6 +94,7 @@ export enum VersionStatus {
   FAILED = "failed", // Indexing failed
   CANCELLED = "cancelled", // Indexing was cancelled
   UPDATING = "updating", // Re-indexing existing version
+  PAUSED = "paused", // Crawl paused by operator, awaiting resume
 }
 
 /**
@@ -251,6 +252,7 @@ export function getStatusDescription(status: VersionStatus): string {
     [VersionStatus.FAILED]: "Indexing failed",
     [VersionStatus.CANCELLED]: "Indexing was cancelled",
     [VersionStatus.UPDATING]: "Re-indexing in progress",
+    [VersionStatus.PAUSED]: "Crawl paused, awaiting resume",
   };
 
   return descriptions[status] || "Unknown status";

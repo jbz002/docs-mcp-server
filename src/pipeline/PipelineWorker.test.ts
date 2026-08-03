@@ -137,6 +137,7 @@ describe("PipelineWorker", () => {
       mockJob.scraperOptions, // Now passes the complete options directly
       expect.any(Function), // The progress callback
       abortController.signal,
+      undefined, // pauseController (mock job has none)
     );
 
     // Verify addScrapeResult was called for each document

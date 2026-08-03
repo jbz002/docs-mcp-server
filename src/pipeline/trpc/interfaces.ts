@@ -34,6 +34,11 @@ export interface IPipeline {
   getJob(jobId: string): Promise<PipelineJob | undefined>;
   getJobs(status?: PipelineJobStatus): Promise<PipelineJob[]>;
   cancelJob(jobId: string): Promise<void>;
+  pauseJob(jobId: string): Promise<{ live: boolean }>;
+  resumeJob(
+    jobId: string,
+    ref: { library: string; version: string | undefined | null },
+  ): Promise<{ live: boolean; jobId?: string }>;
   clearCompletedJobs(): Promise<number>;
   waitForJobCompletion(jobId: string): Promise<void>;
   setCallbacks(callbacks: PipelineManagerCallbacks): void;

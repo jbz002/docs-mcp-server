@@ -64,8 +64,10 @@ export class PipelineWorker {
         );
       } else {
         // crawlOnly: clear the raw result cache so a fresh scrape does not
-        // retain stale pages from a prior run (mirrors normal-mode removeAllDocuments)
-        if (scraperOptions.crawlOnly) {
+        // retain stale pages from a prior run (mirrors normal-mode removeAllDocuments).
+        // Resume after restart keeps the cache so already-crawled URLs upsert idempotently
+        // (UNIQUE(version_id,url)) and any AIHelms backfill salvage stays consistent.
+        if (scraperOptions.crawlOnly && !job.isResume) {
           await this.store.clearCrawlResults(library, version);
           logger.info(
             `💾 Cleared crawl_results cache for ${library}@${version || "latest"} before scraping.`,
@@ -73,7 +75,9 @@ export class PipelineWorker {
         }
         const message = scraperOptions.isRefresh
           ? `🔄 Refresh operation - preserving existing data for ${library}@${version || "latest"}.`
-          : `💾 Appending to store for ${library}@${version || "latest"} (clean=false).`;
+          : job.isResume
+            ? `▶️ Resume re-scrape for ${library}@${version || "latest"} (crawl_results cache preserved).`
+            : `💾 Appending to store for ${library}@${version || "latest"} (clean=false).`;
         logger.info(message);
       }
 
@@ -160,6 +164,7 @@ export class PipelineWorker {
           }
         },
         signal, // Pass signal to scraper service
+        job.pauseController, // Pass cooperative pause gate
       );
       // --- End Core Job Logic ---
 

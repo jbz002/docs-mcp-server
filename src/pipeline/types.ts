@@ -1,4 +1,5 @@
 import type {
+  PauseController,
   ScrapeResult,
   ScraperOptions,
   ScraperProgressEvent,
@@ -15,6 +16,8 @@ export enum PipelineJobStatus {
   FAILED = "failed",
   CANCELLING = "cancelling",
   CANCELLED = "cancelled",
+  // Worker 在主循环 loop head 挂起等待恢复;既非 active 也非 final。
+  PAUSED = "paused",
 }
 
 /**
@@ -81,6 +84,11 @@ export interface InternalPipelineJob
   resolveCompletion: () => void;
   /** Rejector function for the completion promise. */
   rejectCompletion: (reason?: unknown) => void;
+  /** 协作暂停控制器:主循环 loop head 检查 requested,置位则 await gate 挂起。
+   *  由 enqueueScrapeJob 创建;测试桩可不提供。 */
+  pauseController?: PauseController;
+  /** 重启恢复重入标志:跳过 crawl_results 清理 + 用已爬 URL 填 visited。 */
+  isResume?: boolean;
 }
 
 /**

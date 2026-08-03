@@ -33,6 +33,7 @@ export interface ScraperStrategy {
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal, // Add optional signal
+    pauseController?: PauseController, // Cooperative pause gate
   ): Promise<void>;
 
   /**
@@ -40,6 +41,23 @@ export interface ScraperStrategy {
    * Should be called when the strategy is no longer needed.
    */
   cleanup?(): Promise<void>;
+}
+
+/**
+ * Cooperative pause control for a running scrape, mirroring AbortController.
+ * Created by PipelineManager and consumed by the crawl loop.
+ *
+ * - `requested` true → loop awaits `gate` (worker suspends at loop head, holds slot).
+ * - resume → manager sets requested=false and resolves the current gate; on the
+ *   next pause it re-arms a fresh gate.
+ * - cancel during pause → manager rejects the gate with CancellationError so the
+ *   blocked worker unblocks and tears down as CANCELLED.
+ */
+export interface PauseController {
+  requested: boolean;
+  gate: Promise<void>;
+  resolve: () => void;
+  reject: (reason?: unknown) => void;
 }
 
 /**

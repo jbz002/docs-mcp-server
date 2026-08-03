@@ -2,7 +2,7 @@ import type { ProgressCallback } from "../types";
 import { ScraperError } from "../utils/errors";
 import { logger } from "../utils/logger";
 import type { ScraperRegistry } from "./ScraperRegistry";
-import type { ScraperOptions, ScraperProgressEvent } from "./types";
+import type { PauseController, ScraperOptions, ScraperProgressEvent } from "./types";
 
 /**
  * Orchestrates document scraping operations using registered scraping strategies.
@@ -25,6 +25,7 @@ export class ScraperService {
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
     signal?: AbortSignal,
+    pauseController?: PauseController,
   ): Promise<void> {
     // Get a fresh strategy instance for this scrape (factory pattern)
     const strategy = this.registry.getStrategy(options.url);
@@ -32,8 +33,8 @@ export class ScraperService {
     let scrapeError: Error | null = null;
     let cleanupErrorToThrow: Error | null = null;
     try {
-      // Pass the signal down to the strategy
-      await strategy.scrape(options, progressCallback, signal);
+      // Pass the signal and pause gate down to the strategy
+      await strategy.scrape(options, progressCallback, signal, pauseController);
     } catch (error) {
       scrapeError =
         error instanceof Error

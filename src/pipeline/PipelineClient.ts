@@ -164,6 +164,45 @@ export class PipelineClient implements IPipeline {
     }
   }
 
+  async pauseJob(jobId: string): Promise<{ live: boolean }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/jobs/${jobId}/pause`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const data = (await response.json()) as { live?: boolean };
+      logger.debug(`Job paused via external worker: ${jobId}`);
+      return { live: data.live ?? true };
+    } catch (error) {
+      logger.error(`❌ Failed to pause job ${jobId} via external worker: ${error}`);
+      throw error;
+    }
+  }
+
+  async resumeJob(
+    jobId: string,
+    ref: { library: string; version: string | undefined | null },
+  ): Promise<{ live: boolean; jobId?: string }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/jobs/${jobId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ library: ref.library, version: ref.version }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const data = (await response.json()) as { live?: boolean; jobId?: string };
+      logger.debug(`Job resumed via external worker: ${jobId}`);
+      return { live: data.live ?? true, jobId: data.jobId };
+    } catch (error) {
+      logger.error(`❌ Failed to resume job ${jobId} via external worker: ${error}`);
+      throw error;
+    }
+  }
+
   async clearCompletedJobs(): Promise<number> {
     try {
       const response = await fetch(`${this.baseUrl}/api/jobs/clear-completed`, {

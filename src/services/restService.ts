@@ -177,6 +177,43 @@ export async function registerRestService(
     },
   );
 
+  // 请求协作暂停(QUEUED/RUNNING job)。无 live job 时 {live:false}。
+  api.post(
+    "/api/jobs/:id/pause",
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      await handleRoute(reply, async () => {
+        const { id } = request.params;
+        const result = await pipeline.pauseJob(id);
+        return { success: true, live: result.live };
+      });
+    },
+  );
+
+  // 恢复暂停 job。live job 直接解 gate;否则(进程重启)按 {library,version} 重入恢复,
+  // 返回新 jobId 供调用方回写。
+  api.post(
+    "/api/jobs/:id/resume",
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: Record<string, unknown> }>,
+      reply: FastifyReply,
+    ) => {
+      await handleRoute(reply, async () => {
+        const { id } = request.params;
+        const parsed = z
+          .object({
+            library: nonEmptyTrimmed,
+            version: optionalTrimmed,
+          })
+          .parse(request.body ?? {});
+        const result = await pipeline.resumeJob(id, {
+          library: parsed.library,
+          version: parsed.version ?? null,
+        });
+        return { success: true, live: result.live, jobId: result.jobId };
+      });
+    },
+  );
+
   api.post(
     "/api/jobs/clear-completed",
     async (_request: FastifyRequest, reply: FastifyReply) => {
