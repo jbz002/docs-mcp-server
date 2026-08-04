@@ -14,3 +14,7 @@ public/assets/
 # Local tool artifacts
 .playwright-mcp/
 .vitest-config-mock/
+
+# DingTalk scrape verification samples
+docs/*.txt
+docs/*.err
