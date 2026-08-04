@@ -34,11 +34,18 @@ const makeBlock = (monaco: boolean): HTMLElement => {
 };
 
 describe("dingtalkAdapter", () => {
-  it("targets dingtalk hosts with nav-noise selectors and a scroll container", () => {
+  it("targets dingtalk hosts with nav-noise and floating-widget selectors", () => {
     expect(dingtalkAdapter.id).toBe("dingtalk");
     expect(dingtalkAdapter.hosts).toContain("open.dingtalk.com");
     expect(dingtalkAdapter.excludeSelectors).toContain('[class*="treeMenu"]');
     expect(dingtalkAdapter.excludeSelectors).toContain(".doc-right-wrapper");
+    expect(dingtalkAdapter.excludeSelectors).toContain('[class*="new-header-submenu"]');
+    expect(dingtalkAdapter.excludeSelectors).toContain(".doc-recommend-section");
+    expect(dingtalkAdapter.excludeSelectors).toContain(".menu-step-wrapper");
+    expect(dingtalkAdapter.excludeSelectors).toContain(".styles-float-new");
+    expect(dingtalkAdapter.excludeSelectors).toContain(".ai-assistant-button-wrapper");
+    expect(dingtalkAdapter.excludeSelectors).toContain(".intro-guide-wrapper");
+    expect(dingtalkAdapter.excludeSelectors).toContain('[class*="introjs"]');
     expect(dingtalkAdapter.scrollContainerSelector).toBe(".article-main-new");
     expect(dingtalkAdapter.domFixScripts?.[0]?.id).toBe("dingtalk-monaco-code-fix");
   });

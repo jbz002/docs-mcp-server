@@ -91,6 +91,12 @@ const monacoCodeBlockFixer: SiteAdapterDomScript = {
  * fraction of the real code. This adapter scrolls the inner content container
  * to trigger lazy rendering, then replaces each `.doc-code-block` with the
  * model's full source via `monaco.editor.getModels()`.
+ *
+ * Nav/noise chrome is stripped via excludeSelectors through the downstream
+ * sanitizer. Selectors are stable semantic classes (verified across the SPA):
+ * top tab nav, bottom recommendations + prev/next pager, and the fixed
+ * floating widgets (智能解释/文档反馈/开发助手, the "鼠标选中内容" guidance
+ * tooltip, and the first-visit introjs tour).
  */
 export const dingtalkAdapter: SiteAdapter = {
   id: "dingtalk",
@@ -103,6 +109,22 @@ export const dingtalkAdapter: SiteAdapter = {
     ".doc-breadcrumb",
     '[class*="breadcrumb"]',
     ".doc-right-wrapper",
+    // Top tab nav (文档中心｜应用开发/服务端API/客户端JSAPI/事件订阅/钉钉CLI).
+    '[class*="new-header-submenu"]',
+    // Bottom "遇到其他问题？问问AI钉钉开发助手" + related-question recommendations.
+    ".doc-recommend-section",
+    // Previous/next doc pager (上一篇 / 下一篇).
+    ".menu-step-wrapper",
+    // Floating widget rail (智能解释 / 文档反馈).
+    ".styles-float-new",
+    // "开发助手" floating button.
+    ".ai-assistant-button-wrapper",
+    // Doc-feedback floating-action-button shell.
+    ".article-doc-feedback-fab-wrapper",
+    // "鼠标选中内容，AI智能解释" first-visit guidance tooltip.
+    ".intro-guide-wrapper",
+    // First-visit tour overlays (introjs + dingtalk variant, e.g. "跳过钉钉开发助手...").
+    '[class*="introjs"]',
   ],
   scrollContainerSelector: ".article-main-new",
   domFixScripts: [monacoCodeBlockFixer],
