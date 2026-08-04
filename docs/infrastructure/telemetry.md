@@ -134,11 +134,6 @@ Services integrate telemetry through direct analytics usage:
 - Simple connection logging for client tracking
 - No session management - just basic connection events
 
-**Web Service** (`src/services/webService.ts`)
-
-- Direct event tracking for web interface usage
-- No session management needed
-
 ## Data Collection Patterns
 
 ### Event Types
@@ -328,7 +323,7 @@ Key performance insights include:
 
 Strategic insights for product development:
 
-- Interface preference trends (CLI vs MCP vs Web)
+- Interface preference trends (CLI vs MCP)
 - Tool popularity and usage patterns
 - Error categorization for improvement priorities
 

@@ -97,7 +97,6 @@ describe("worker command", () => {
     const config = callArgs[3]; // 4th arg is config
     expect(config.enableWorker).toBe(true);
     expect(config.enableApiServer).toBe(true);
-    expect(config.enableWebInterface).toBe(false);
     expect(config.port).toBe(8080);
   });
 });

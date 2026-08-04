@@ -2,8 +2,6 @@
 
 **Docs MCP Server** solves the problem of AI hallucinations and outdated knowledge by providing a personal, always-current documentation index for your AI coding assistant. It fetches official docs from websites, GitHub, npm, PyPI, and local files, allowing your AI to query the exact version you are using.
 
-![Docs MCP Server Web Interface](docs/docs-mcp-server.png)
-
 ## ✨ Why Grounded Docs MCP Server?
 
 The open-source alternative to **Context7**, **Nia**, and **Ref.Tools**.
@@ -86,9 +84,7 @@ If you want a long-running MCP endpoint for Claude, Cline, Copilot, Gemini CLI, 
 npx @arabold/docs-mcp-server@latest
 ```
 
-**2. Open the Web UI** at **[http://localhost:6280](http://localhost:6280)** to add documentation.
-
-**3. Connect your AI client** by adding this to your MCP settings (e.g., `claude_desktop_config.json`):
+**2. Connect your AI client** by adding this to your MCP settings (e.g., `claude_desktop_config.json`):
 
 ```json
 {
@@ -139,14 +135,14 @@ See **[Embedding Models](docs/guides/embedding-models.md)** for configuring **Ol
 ### Getting Started
 -   **[Installation](docs/setup/installation.md)**: Detailed setup guides for Docker, Node.js (npx), and Embedded mode.
 -   **[Connecting Clients](docs/guides/mcp-clients.md)**: How to connect Claude, VS Code (Cline/Roo), and other MCP clients.
--   **[Basic Usage](docs/guides/basic-usage.md)**: Using the Web UI, CLI, and scraping local files.
+-   **[Basic Usage](docs/guides/basic-usage.md)**: Using the CLI and scraping local files.
 -   **[Configuration](docs/setup/configuration.md)**: Full reference for config files and environment variables.
 -   **[Supported Formats](docs/concepts/supported-formats.md)**: Complete file format and MIME type reference.
 -   **[Embedding Models](docs/guides/embedding-models.md)**: Configure OpenAI, Ollama, Gemini, and other providers.
 -   **[Search Quality Benchmark](docs/guides/benchmarking.md)**: Measure retrieval quality with IR metrics + LLM-judged scores; prerequisites, how to run, how to interpret results.
 
 ### Hash-Routed SPAs
--   Use `--preserve-hashes`, MCP `preserveHashes`, or the Web UI "Preserve Hash Routes" checkbox only for docs sites that route with URLs like `#/guide`.
+-   Use `--preserve-hashes` or MCP `preserveHashes` only for docs sites that route with URLs like `#/guide`.
 -   When enabled with `scrapeMode=fetch`, the scraper automatically upgrades the job to Playwright because plain fetch cannot evaluate client-side hash routes.
 -   Refresh reuses the stored `preserveHashes` setting by default, and CLI/Web refresh entrypoints can override it explicitly.
 

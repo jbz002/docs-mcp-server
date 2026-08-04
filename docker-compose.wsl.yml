@@ -1,4 +1,4 @@
-# WSL2 deployment — worker + mcp + web
+# WSL2 deployment — worker + mcp
 # Usage: docker compose -f docker-compose.yml -f docker-compose.wsl.yml up -d
 #
 services:

@@ -24,7 +24,6 @@ import { createRefreshCommand } from "./commands/refresh";
 import { createRemoveCommand } from "./commands/remove";
 import { createScrapeCommand } from "./commands/scrape";
 import { createSearchCommand } from "./commands/search";
-import { createWebCommand } from "./commands/web";
 import { createWorkerCommand } from "./commands/worker";
 import { applyGlobalCliOutputMode, registerGlobalOutputOptions } from "./output";
 import { registerGlobalServices } from "./services";
@@ -174,7 +173,6 @@ export function createCli(argv: string[]): Argv {
   createRemoveCommand(cli);
   createScrapeCommand(cli);
   createSearchCommand(cli);
-  createWebCommand(cli);
   createWorkerCommand(cli);
 
   return cli;

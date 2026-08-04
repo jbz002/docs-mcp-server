@@ -129,7 +129,6 @@ describe("mcp command", () => {
     const callArgs = (appModule.startAppServer as any).mock.calls[0];
     const config = callArgs[3];
     expect(config.enableMcpServer).toBe(true);
-    expect(config.enableWebInterface).toBe(false);
   });
 
   it("starts Stdio server when protocol is stdio", async () => {

@@ -93,7 +93,6 @@ export function createWorkerCommand(cli: Argv) {
 
         // Configure worker-only server
         const config = createAppServerConfig({
-          enableWebInterface: false,
           enableMcpServer: false,
           enableApiServer: true,
           enableWorker: true,

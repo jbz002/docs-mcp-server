@@ -3,9 +3,6 @@
  * This replaces the separate server implementations with a single, modular approach.
  */
 
-import path from "node:path";
-import formBody from "@fastify/formbody";
-import fastifyStatic from "@fastify/static";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import { ProxyAuthManager } from "../auth";
@@ -14,7 +11,6 @@ import { RemoteEventProxy } from "../events/RemoteEventProxy";
 import type { IPipeline } from "../pipeline/trpc/interfaces";
 import { cleanupMcpService, registerMcpService } from "../services/mcpService";
 import { registerRestService } from "../services/restService";
-import { registerWebService } from "../services/webService";
 import { registerWorkerService, stopWorkerService } from "../services/workerService";
 import type { IDocumentManagement } from "../store/trpc/interfaces";
 import { TelemetryEvent, telemetry } from "../telemetry";
@@ -22,7 +18,6 @@ import { shouldEnableTelemetry } from "../telemetry/TelemetryConfig";
 import { printBanner } from "../utils/banner";
 import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
-import { getProjectRoot } from "../utils/paths";
 import { getCanonicalServerOrigin, isWildcardBindHost } from "../utils/serverOrigin";
 import type { AppServerConfig } from "./AppServerConfig";
 
@@ -55,15 +50,6 @@ export class AppServer {
    * Validate the server configuration for invalid service combinations.
    */
   private validateConfig(): void {
-    // Web interface needs either worker or external worker URL
-    if (this.serverConfig.enableWebInterface) {
-      if (!this.serverConfig.enableWorker && !this.serverConfig.externalWorkerUrl) {
-        throw new Error(
-          "Web interface requires either embedded worker (enableWorker: true) or external worker (externalWorkerUrl)",
-        );
-      }
-    }
-
     // MCP server needs pipeline access (worker or external)
     if (this.serverConfig.enableMcpServer) {
       if (!this.serverConfig.enableWorker && !this.serverConfig.externalWorkerUrl) {
@@ -271,7 +257,6 @@ export class AppServer {
   private getActiveServicesList(): string[] {
     const services: string[] = [];
     if (this.serverConfig.enableMcpServer) services.push("mcp");
-    if (this.serverConfig.enableWebInterface) services.push("web");
     if (this.serverConfig.enableApiServer) services.push("api");
     if (this.serverConfig.enableWorker) services.push("worker");
     return services;
@@ -291,9 +276,6 @@ export class AppServer {
     if (this.appConfig.auth.enabled) {
       await this.initializeAuth();
     }
-
-    // Register core Fastify plugins
-    await this.server.register(formBody);
 
     // Add request logging middleware for OAuth debugging
     if (this.appConfig.auth.enabled) {
@@ -316,10 +298,6 @@ export class AppServer {
     }
 
     // Conditionally enable services based on configuration
-    if (this.serverConfig.enableWebInterface) {
-      await this.enableWebInterface();
-    }
-
     if (this.serverConfig.enableMcpServer) {
       await this.enableMcpServer();
     }
@@ -330,11 +308,6 @@ export class AppServer {
 
     if (this.serverConfig.enableWorker) {
       await this.enableWorker();
-    }
-
-    // Setup static file serving as fallback (must be last)
-    if (this.serverConfig.enableWebInterface) {
-      await this.setupStaticFiles();
     }
   }
 
@@ -353,22 +326,6 @@ export class AppServer {
         "Remote event proxy created for external worker (connection deferred)",
       );
     }
-  }
-
-  /**
-   * Enable web interface service.
-   */
-  private async enableWebInterface(): Promise<void> {
-    await registerWebService(
-      this.server,
-      this.docService,
-      this.pipeline,
-      this.eventBus,
-      this.appConfig,
-      this.serverConfig.externalWorkerUrl,
-    );
-
-    logger.debug("Web interface service enabled");
   }
 
   /**
@@ -404,17 +361,6 @@ export class AppServer {
   private async enableWorker(): Promise<void> {
     await registerWorkerService(this.pipeline);
     logger.debug("Worker service enabled");
-  }
-
-  /**
-   * Setup static file serving with root prefix as fallback.
-   */
-  private async setupStaticFiles(): Promise<void> {
-    await this.server.register(fastifyStatic, {
-      root: path.join(getProjectRoot(), "public"),
-      prefix: "/",
-      index: false,
-    });
   }
 
   /**
@@ -480,37 +426,20 @@ export class AppServer {
 
     // Determine the service mode
     const isWorkerOnly =
-      this.serverConfig.enableWorker &&
-      !this.serverConfig.enableWebInterface &&
-      !this.serverConfig.enableMcpServer;
-    const isWebOnly =
-      this.serverConfig.enableWebInterface &&
-      !this.serverConfig.enableWorker &&
-      !this.serverConfig.enableMcpServer;
+      this.serverConfig.enableWorker && !this.serverConfig.enableMcpServer;
     const isMcpOnly =
-      this.serverConfig.enableMcpServer &&
-      !this.serverConfig.enableWebInterface &&
-      !this.serverConfig.enableWorker;
+      this.serverConfig.enableMcpServer && !this.serverConfig.enableWorker;
 
     // Determine the main service name
     if (isWorkerOnly) {
       logger.info(`🚀 Worker available at ${address}`);
-    } else if (isWebOnly) {
-      logger.info(`🚀 Web interface available at ${address}`);
     } else if (isMcpOnly) {
       logger.info(`🚀 MCP server available at ${address}`);
     } else {
       logger.info(`🚀 Grounded Docs available at ${address}`);
     }
 
-    const isCombined = !isWorkerOnly && !isWebOnly && !isMcpOnly;
-
     const enabledServices: string[] = [];
-
-    // Web interface: only show if combined mode
-    if (this.serverConfig.enableWebInterface && isCombined) {
-      enabledServices.push(`Web interface: ${address}`);
-    }
 
     // MCP endpoints: always show if enabled
     if (this.serverConfig.enableMcpServer) {

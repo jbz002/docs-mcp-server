@@ -184,7 +184,6 @@ export function createDefaultAction(cli: Argv) {
       } else {
         logger.debug(`Auto-detected http protocol (TTY available)`);
         const config = createAppServerConfig({
-          enableWebInterface: true,
           enableMcpServer: true,
           enableApiServer: true,
           enableWorker: true,

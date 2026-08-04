@@ -10,13 +10,13 @@ The Documentation MCP Server indexes documentation from web sources, local files
 - Semantic search using vector embeddings (OpenAI, Google, Azure, AWS providers)
 - Version-specific documentation queries
 - Asynchronous job processing with recovery
-- Multiple access interfaces: CLI, MCP protocol, web UI
+- Multiple access interfaces: CLI, MCP protocol
 
 ### Deployment Modes
 
 The system runs in two modes:
 
-**Unified Server**: Single process containing MCP server, web interface, and embedded worker. Default mode for development and simple deployments.
+**Unified Server**: Single process containing MCP server and embedded worker. Default mode for development and simple deployments.
 
 **Distributed Mode**: Separate coordinator and worker processes. Used for scaling processing workload across multiple containers.
 
@@ -26,7 +26,6 @@ Protocol selection is automatic - stdio transport for AI tools (no TTY), HTTP tr
 
 - Node.js 22.x, TypeScript, Vite build system
 - Vitest for testing
-- HTMX, AlpineJS, TailwindCSS for web interface
 - LangChain.js for embeddings, Playwright for scraping
 - SQLite with schema migrations
 
@@ -77,8 +76,7 @@ src/
 ├── store/                           # Data storage and retrieval
 ├── tools/                           # Business logic implementations
 ├── types/                           # Shared TypeScript interfaces
-├── utils/                           # Common utilities
-└── web/                             # Web interface implementation
+└── utils/                           # Common utilities
 ```
 
 ## System Architecture
@@ -96,7 +94,6 @@ graph TD
 
         subgraph "Interfaces"
             CLI[CLI Commands]
-            WEB[Web Interface]
             MCP[MCP Server]
         end
 
@@ -118,7 +115,7 @@ graph TD
         end
 
         %% Command Flow
-        CLI & WEB & MCP --> FACTORY
+        CLI & MCP --> FACTORY
         FACTORY -->|Creates| MANAGER
         MANAGER -->|Manages| WORKER
         WORKER --> SCRAPER
@@ -127,7 +124,7 @@ graph TD
 
         %% Event Flow
         MANAGER -.->|Emits Events| EB
-        EB -.->|Real-time Updates| CLI & WEB & MCP
+        EB -.->|Real-time Updates| CLI & MCP
 
         %% Data Flow
         EMBEDDER -->|Stores Content| DOC
@@ -143,22 +140,10 @@ graph TD
 
 ### Distributed Mode (Hub & Spoke)
 
-In distributed mode, the worker runs as a separate process. Multiple coordinators (Web UI, MCP Server) connect to the shared worker via tRPC. Each coordinator uses `PipelineClient` to send commands over HTTP and receive real-time events via WebSocket. The `RemoteEventProxy` bridges remote events into the local `EventBus`, making the distributed setup transparent to consumers.
+In distributed mode, the worker runs as a separate process. One or more MCP coordinators connect to the shared worker via tRPC. Each coordinator uses `PipelineClient` to send commands over HTTP and receive real-time events via WebSocket. The `RemoteEventProxy` bridges remote events into the local `EventBus`, making the distributed setup transparent to consumers.
 
 ```mermaid
 graph TD
-    subgraph "Web Coordinator Process"
-        WEB_UI[Web Interface]
-        WEB_CLIENT[PipelineClient]
-        WEB_PROXY[RemoteEventProxy]
-        WEB_EB[EventBus]
-
-        WEB_UI --> WEB_CLIENT
-        WEB_CLIENT -.->|Remote Events| WEB_PROXY
-        WEB_PROXY -->|Re-emit Locally| WEB_EB
-        WEB_EB -.->|Updates| WEB_UI
-    end
-
     subgraph "MCP Coordinator Process"
         MCP_SRV[MCP Server]
         MCP_CLIENT[PipelineClient]
@@ -184,9 +169,6 @@ graph TD
     end
 
     %% Network Connections
-    WEB_CLIENT ==>|HTTP: Commands| TRPC
-    TRPC -.->|WebSocket: Events| WEB_CLIENT
-
     MCP_CLIENT ==>|HTTP: Commands| TRPC
     TRPC -.->|WebSocket: Events| MCP_CLIENT
 ```
@@ -194,7 +176,7 @@ graph TD
 **Key Characteristics:**
 
 - **Hub**: Shared worker process executes all jobs
-- **Spokes**: Independent coordinator processes (Web, MCP, CLI)
+- **Spokes**: Independent coordinator processes (MCP, CLI)
 - **Split-Link Communication**: HTTP for commands, WebSocket for events
 - **Event Bridging**: `RemoteEventProxy` makes remote events appear local
 - **Scalability**: Multiple coordinators can share one worker
@@ -222,7 +204,7 @@ Naming clarifies the mode: PipelineManager runs an in-process worker; PipelineCl
 
 ### Tools Layer
 
-Business logic resides in the tools layer to enable code reuse across interfaces. Tools operate on shared pipeline and storage services, eliminating interface-specific implementations. CLI commands, MCP endpoints, and web routes all delegate to the same tool implementations.
+Business logic resides in the tools layer to enable code reuse across interfaces. Tools operate on shared pipeline and storage services, eliminating interface-specific implementations. CLI commands and MCP endpoints all delegate to the same tool implementations.
 
 The tools layer includes:
 
@@ -244,7 +226,7 @@ The pipeline system manages asynchronous job processing with persistent state an
 
 **RemoteEventProxy**: Bridges events from external workers to the local `EventBus`. Subscribes to the worker's tRPC event stream (WebSocket) and re-emits events locally, making distributed execution transparent to consumers.
 
-**EventBus**: Central pub/sub service that decouples event producers (PipelineManager) from consumers (CLI, Web UI, MCP). Enables real-time updates without direct coupling between components.
+**EventBus**: Central pub/sub service that decouples event producers (PipelineManager) from consumers (CLI, MCP). Enables real-time updates without direct coupling between components.
 
 Job states progress through: QUEUED → RUNNING → COMPLETED/FAILED/CANCELLED. All state transitions persist to database and emit events, enabling both recovery after restart and real-time monitoring. See [Event Bus Architecture](docs/concepts/eventbus-architecture.md) for detailed event flow diagrams.
 
@@ -286,14 +268,6 @@ The `versions` table serves as the job state hub, storing progress, errors, and 
 DocumentManagementService handles CRUD operations and version resolution. DocumentRetrieverService provides hybrid search combining vector similarity and full-text search using Reciprocal Rank Fusion (RRF) with configurable weights. The search system implements dual-mode FTS query generation for improved recall (combining exact phrase and keyword matching) and uses an overfetch factor to retrieve more candidates before final ranking.
 
 ## Interface Implementations
-
-### Web Interface
-
-Server-side rendered application using Fastify with JSX components. HTMX provides dynamic updates without client-side JavaScript frameworks. AlpineJS handles client-side interactivity within components.
-
-Routes delegate to tools layer for data operations. Components poll for job status updates every 3 seconds, displaying progress bars and status changes in real-time.
-
-HTMX and AlpineJS integration uses custom events to decouple component interactions from global HTMX state.
 
 ### MCP Protocol Integration
 

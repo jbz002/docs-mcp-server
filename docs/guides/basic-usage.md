@@ -1,28 +1,6 @@
 # Basic Usage
 
-Once the server is running, you can interact with it via the Web Interface, CLI, or your AI Assistant.
-
-## 🌐 Web Interface
-
-If you are running the Standalone Server (Docker or npx), the web interface is available at:
-
-**`http://localhost:6280`**
-
-Use this interface to:
--   **Add New Documentation:** Submit URLs for indexing.
--   **Monitor Jobs:** Watch the scraping and indexing progress.
--   **Manage Library:** View and delete indexed documentation.
--   **Search:** Manually test search queries to see what the AI will see.
-
-### Launching Web UI for Embedded Server
-
-If you are using the [Embedded Server](../setup/installation.md#embedded-server) (running inside your AI tool), it does not expose a web interface by default. You can launch a temporary web UI that connects to the same database:
-
-```bash
-OPENAI_API_KEY="your-key" npx @arabold/docs-mcp-server@latest web --port 6281
-```
-
-Open `http://localhost:6281`. Stop the process (`Ctrl+C`) when finished.
+Once the server is running, you can interact with it via the CLI or your AI Assistant.
 
 ## 💻 CLI Usage
 
@@ -94,13 +72,13 @@ Run `npx @arabold/docs-mcp-server@latest --help` for the full command reference.
 
 ### Using CLI and Server Together
 
-Starting the server without any command runs both the MCP endpoint and the web interface:
+Starting the server without any command runs the MCP endpoint:
 
 ```bash
 npx @arabold/docs-mcp-server@latest
 ```
 
-You can then use the CLI in parallel to query the same local database, for example from an AI coding agent, while managing documentation through the web UI at **[http://localhost:6280](http://localhost:6280)**.
+You can then use the CLI in parallel to manage documentation and query the same local database, for example from an AI coding agent.
 
 ### Agent Skills
 
@@ -122,7 +100,7 @@ See **[agentskills.io](https://agentskills.io)** for the full specification and 
 
 ## 📂 Scraping Local Files
 
-You can index documentation from your local filesystem using `file://` URLs. This works in both the Web UI and CLI.
+You can index documentation from your local filesystem using `file://` URLs. This works in the CLI and MCP tools.
 
 ### Requirements
 -   Supports text files (HTML, Markdown, source code, etc.) and documents (PDF, Word, Excel, PowerPoint, and more). See [Supported Formats](../concepts/supported-formats.md) for the full list.
@@ -131,7 +109,7 @@ You can index documentation from your local filesystem using `file://` URLs. Thi
 
 ### Examples
 
-**Web UI / CLI Input:**
+**CLI Input:**
 -   `file:///Users/me/docs/index.html` (Single file)
 -   `file:///Users/me/docs/my-library` (Directory)
 

@@ -90,7 +90,6 @@ export const DEFAULT_CONFIG = {
       default: 6280,
       worker: 8080,
       mcp: 6280,
-      web: 6281,
     },
     heartbeatMs: 30_000,
   },
@@ -202,7 +201,6 @@ export const AppConfigSchema = z.object({
           default: z.coerce.number().int().default(DEFAULT_CONFIG.server.ports.default),
           worker: z.coerce.number().int().default(DEFAULT_CONFIG.server.ports.worker),
           mcp: z.coerce.number().int().default(DEFAULT_CONFIG.server.ports.mcp),
-          web: z.coerce.number().int().default(DEFAULT_CONFIG.server.ports.web),
         })
         .default(DEFAULT_CONFIG.server.ports),
       heartbeatMs: z.coerce.number().int().default(DEFAULT_CONFIG.server.heartbeatMs),
@@ -458,11 +456,6 @@ const configMappings: ConfigMapping[] = [
   {
     path: ["server", "ports", "mcp"],
     env: ["DOCS_MCP_PORT", "PORT"],
-    cli: "port",
-  },
-  {
-    path: ["server", "ports", "web"],
-    env: ["DOCS_MCP_WEB_PORT", "DOCS_MCP_PORT", "PORT"],
     cli: "port",
   },
   { path: ["server", "host"], env: ["DOCS_MCP_HOST", "HOST"], cli: "host" },

@@ -173,7 +173,6 @@ export function validateHost(hostString: string): string {
  * AppServerConfig only selects which services to run and which port to bind to.
  */
 export function createAppServerConfig(options: {
-  enableWebInterface?: boolean;
   enableMcpServer?: boolean;
   enableApiServer?: boolean;
   enableWorker?: boolean;
@@ -187,7 +186,6 @@ export function createAppServerConfig(options: {
   };
 }): AppServerConfig {
   return {
-    enableWebInterface: options.enableWebInterface ?? false,
     enableMcpServer: options.enableMcpServer ?? true,
     enableApiServer: options.enableApiServer ?? false,
     enableWorker: options.enableWorker ?? true,

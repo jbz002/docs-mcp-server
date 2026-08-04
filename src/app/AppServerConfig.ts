@@ -6,9 +6,6 @@
  */
 
 export interface AppServerConfig {
-  /** Enable web interface routes and static file serving */
-  enableWebInterface: boolean;
-
   /** Enable MCP protocol routes for AI tool integration */
   enableMcpServer: boolean;
 

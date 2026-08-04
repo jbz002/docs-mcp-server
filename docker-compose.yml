@@ -3,7 +3,6 @@
 # Scaling setup with separate services:
 # - worker: Handles documentation processing
 # - mcp: MCP server endpoint for AI tools
-# - web: Web interface for management
 #
 services:
   # Worker service - handles the actual documentation processing
@@ -58,41 +57,6 @@ services:
     restart: unless-stopped
     ports:
       - "6280:6280"
-    env_file:
-      - .env
-    volumes:
-      - docs-mcp-config:/config
-    depends_on:
-      worker:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-        reservations:
-          memory: 256M
-
-  # Web interface - provides browser-based management
-  web:
-    image: docs-mcp-server:local
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command:
-      [
-        "web",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "6281",
-        "--server-url",
-        "http://worker:8080",
-        "--no-logo",
-      ]
-    container_name: docs-mcp-web
-    restart: unless-stopped
-    ports:
-      - "6281:6281"
     env_file:
       - .env
     volumes:

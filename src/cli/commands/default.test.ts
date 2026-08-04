@@ -123,7 +123,6 @@ describe("default command", () => {
     const callArgs = (appModule.startAppServer as any).mock.calls[0];
     const config = callArgs[3];
     expect(config.enableMcpServer).toBe(true);
-    expect(config.enableWebInterface).toBe(true);
     expect(config.enableApiServer).toBe(true);
     expect(config.port).toBe(6280);
   });

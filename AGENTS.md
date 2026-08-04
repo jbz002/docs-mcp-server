@@ -4,7 +4,7 @@
 ## 仓库概览
 
 - **仓库**: `arabold/docs-mcp-server`
-- **技术栈**: Node.js 22.x, TypeScript, Vite, AlpineJS, TailwindCSS, SQLite (better-sqlite3)
+- **技术栈**: Node.js 22.x, TypeScript, Vite, SQLite (better-sqlite3)
   - **Node 版本**: 本地开发和构建始终使用 **Node.js v22**，即使 `package.json` 允许更低版本。已安装 nvm 时先执行 `nvm use 22`。
 - **工具链**: Biome（lint/格式化）、Vitest（测试）、Husky（pre-commit）
 - **必读文档**:
@@ -18,7 +18,7 @@
 | 任务 | 命令 | 说明 |
 |------|------|------|
 | **安装依赖** | `npm install` | 安装依赖 |
-| **构建** | `npm run build` | 构建 server 和 web 资源 |
+| **构建** | `npm run build` | 构建 server |
 | **检查** | `npm run lint` | Biome 检查 |
 | **自动修复** | `npm run lint:fix` | 自动修复 lint（必要时加 `-- --unsafe`） |
 | **类型检查** | `npm run typecheck` | TypeScript 编译器检查 |
@@ -68,11 +68,6 @@
 - **日志**: 通过 `logger.error` 记录错误，带 `❌` 前缀。
 - **响应**: API 错误返回标准 HTTP 状态码（如 500）。
 - **安全**: 对错误日志中的二进制内容做脱敏处理。
-
-### Web UI (AlpineJS + HTMX)
-- **组件**: AlpineJS + TSX (`kitajs`)。
-- **条件渲染**: 使用三元表达式 `foo ? <Bar/> : null`（避免 `foo && <Bar/>`）。
-- **样式**: TailwindCSS 工具类。
 
 ## 文档规范
 
@@ -142,8 +137,8 @@
 
 ### 服务架构
 
-`docker-compose.yml` 定义三个服务：worker（文档处理，8080）、mcp（MCP 协议端点，6280）、web（管理 UI，6281）。
-`docker-compose.wsl.yml` 覆盖层：禁用 web UI（`profiles: [web]`），将 mcp 服务桥接到 `aihelms_default` 外部网络，使 LiteLLM 可通过 `http://docs-mcp-server:6280/sse` 访问。
+`docker-compose.yml` 定义两个服务：worker（文档处理，8080）、mcp（MCP 协议端点，6280）。
+`docker-compose.wsl.yml` 覆盖层：将 mcp 服务桥接到 `aihelms_default` 外部网络，使 LiteLLM 可通过 `http://docs-mcp-server:6280/sse` 访问。
 
 ### 部署命令
 
@@ -164,11 +159,11 @@ docker compose -f docker-compose.yml -f docker-compose.wsl.yml up -d --build
 
 ### 快速热更新（仅代码变更）
 
-仅改 `src/` 时跳过 Docker build：本地编译，cp 进三个容器（文件系统独立，需各自 cp），秒级生效。
+仅改 `src/` 时跳过 Docker build：本地编译，cp 进两个容器（文件系统独立，需各自 cp），秒级生效。
 
 ```bash
 npm run build   # Windows 侧编译，Vite 缓存加速
-wsl bash -lc 'docker cp /mnt/d/project/docs-mcp-server/dist/. docs-mcp-server:/app/dist/ && docker cp /mnt/d/project/docs-mcp-server/public/. docs-mcp-server:/app/public/ && docker cp /mnt/d/project/docs-mcp-server/dist/. docs-mcp-web:/app/dist/ && docker cp /mnt/d/project/docs-mcp-server/public/. docs-mcp-web:/app/public/ && docker cp /mnt/d/project/docs-mcp-server/dist/. docs-mcp-worker:/app/dist/ && docker cp /mnt/d/project/docs-mcp-server/public/. docs-mcp-worker:/app/public/ && docker restart docs-mcp-server docs-mcp-web docs-mcp-worker'
+wsl bash -lc 'docker cp /mnt/d/project/docs-mcp-server/dist/. docs-mcp-server:/app/dist/ && docker cp /mnt/d/project/docs-mcp-server/dist/. docs-mcp-worker:/app/dist/ && docker restart docs-mcp-server docs-mcp-worker'
 ```
 
 **避坑**（从 Windows Git Bash 经 `wsl` 调用 Docker 时）：

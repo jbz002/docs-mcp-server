@@ -65,7 +65,6 @@ describe("Authentication End-to-End Tests", () => {
 
     // Configure server with authentication enabled
     const config = createAppServerConfig({
-      enableWebInterface: false,
       enableMcpServer: true,
       enableApiServer: false,
       enableWorker: true, // Enable worker for MCP server

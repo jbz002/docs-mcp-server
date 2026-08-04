@@ -172,7 +172,6 @@ Settings for the API and MCP servers.
 | `ports.default` | `6280` | Default port for the main server. |
 | `ports.worker` | `8080` | Port for the background worker service. |
 | `ports.mcp` | `6280` | Port for the specific MCP interface. |
-| `ports.web` | `6281` | Port for the web dashboard. |
 
 ### Authentication (`auth`)
 
@@ -210,7 +209,6 @@ Leave it disabled for normal sites, where hashes usually point to anchors within
 - CLI scrape: use `--preserve-hashes` to enable hash-aware crawling for a job.
 - CLI refresh: use `--preserve-hashes` to override the stored setting for that refresh job.
 - MCP: `scrape_docs` accepts `preserveHashes: true`.
-- Web UI: the scrape form includes a "Preserve Hash Routes" checkbox, and refresh reuses the stored setting.
 - Refresh: stored scraper options retain `preserveHashes` and reuse it by default.
 - Rendering: if `preserveHashes` is enabled and `scrapeMode` is `fetch`, the job is upgraded to `playwright` automatically.
 

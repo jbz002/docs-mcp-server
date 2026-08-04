@@ -197,7 +197,6 @@ export function createMcpCommand(cli: Argv) {
         } else {
           logger.debug(`Auto-detected http protocol (TTY available)`);
           const config = createAppServerConfig({
-            enableWebInterface: false,
             enableMcpServer: true,
             enableApiServer: false,
             enableWorker: !serverUrl,

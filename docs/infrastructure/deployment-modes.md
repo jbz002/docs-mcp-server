@@ -9,7 +9,6 @@ The system supports two deployment patterns with automatic protocol detection fo
 Single process containing all services on one port (default: 6280). This mode combines:
 
 - MCP server accessible via `/mcp` and `/sse` endpoints
-- Web interface for job management
 - Embedded worker for document processing
 - API (tRPC over HTTP) for programmatic access
 
@@ -25,7 +24,6 @@ Single process containing all services on one port (default: 6280). This mode co
 Services can be selectively enabled via AppServerConfig:
 
 - `enableMcpServer`: MCP protocol endpoint
-- `enableWebInterface`: Web UI and management API
 - `enableWorker`: Embedded job processing
 - `enableApiServer`: HTTP API for pipeline and data operations (served at `/api`)
 
@@ -35,7 +33,7 @@ Separate coordinator and worker processes for scaling. The coordinator handles i
 
 ### Architecture
 
-- **Coordinator**: Runs MCP server, web interface, and API; stateless, so multiple replicas can run at once
+- **Coordinator**: Runs MCP server and API; stateless, so multiple replicas can run at once
 - **Worker**: A single process that executes document processing jobs and owns the SQLite-backed document store
 - **Communication**: Coordinators use the API (tRPC over HTTP) to talk to the worker
 
@@ -43,7 +41,7 @@ Separate coordinator and worker processes for scaling. The coordinator handles i
 
 - High-volume processing
 - Container orchestration (Kubernetes, Docker Swarm)
-- Scaling coordinator (web/MCP) replicas independently of the worker
+- Scaling coordinator (MCP) replicas independently of the worker
 - Resource isolation
 
 ### Worker Management
@@ -74,9 +72,7 @@ if (!process.stdin.isTTY && !process.stdout.isTTY) {
 ### HTTP Mode
 
 - Server-Sent Events transport for MCP
-- Full web interface available
 - API accessible at `/api`
-- Suitable for browser access
 
 ### Manual Override
 
@@ -137,7 +133,7 @@ services:
 
 ### Coordinators Scale Horizontally
 
-Coordinator (`web`/`mcp`) processes are stateless: both document reads and job dispatch proxy to the worker over tRPC. Run multiple coordinator replicas behind a load balancer (or DNS), each started with `--server-url` pointing at the same worker.
+Coordinator (`mcp`) processes are stateless: both document reads and job dispatch proxy to the worker over tRPC. Run multiple coordinator replicas behind a load balancer (or DNS), each started with `--server-url` pointing at the same worker.
 
 ### The Worker Does Not Scale Horizontally
 
@@ -149,5 +145,5 @@ Expose a lightweight `/health` endpoint or container healthcheck for coordinator
 
 ### Scaling Strategies
 
-- Horizontal: Add more coordinator (`web`/`mcp`) replicas in front of the one worker
+- Horizontal: Add more coordinator (`mcp`) replicas in front of the one worker
 - Vertical: Increase worker concurrency (`maxConcurrency`) and resource allocation

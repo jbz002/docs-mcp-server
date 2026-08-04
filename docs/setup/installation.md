@@ -4,7 +4,7 @@ This guide covers the various ways to install and run the Docs MCP Server.
 
 ## 🚀 Quick Start (Recommended)
 
-The easiest way to get started is using the standalone server, which includes both the MCP endpoints and the web interface in a single process.
+The easiest way to get started is using the standalone server, which exposes the MCP endpoints in a single process.
 
 ### Option 1: Node.js (npx)
 
@@ -14,7 +14,7 @@ If you have Node.js 22.x installed (recommended for local development), you can 
 npx @arabold/docs-mcp-server@latest
 ```
 
-This runs the server on port 6280 by default. Open **[http://localhost:6280](http://localhost:6280)** to access the web interface.
+This runs the server on port 6280 by default. The server has no built-in UI; manage documentation through the CLI (`scrape`, `search`, and other commands).
 
 **Optional:** Prefix with `OPENAI_API_KEY="your-openai-api-key"` to enable vector search for improved results.
 
@@ -64,7 +64,7 @@ See **[Connecting MCP Clients](../guides/mcp-clients.md)** for instructions for 
 
 ## 🔌 Embedded Server
 
-You can run the MCP server directly embedded in your AI assistant without a separate process or web interface. This provides MCP integration only.
+You can run the MCP server directly embedded in your AI assistant without a separate process. This provides MCP integration only.
 
 Add this to your MCP settings (VS Code, Claude Desktop, etc.):
 
@@ -99,7 +99,7 @@ Add this to your MCP settings (VS Code, Claude Desktop, etc.):
 }
 ```
 
-**Note:** When running in embedded mode, you lose access to the Web Interface unless you launch it separately (see [Basic Usage](../guides/basic-usage.md)).
+**Note:** When running in embedded mode, use the CLI (`scrape`, `search`) to manage documentation (see [Basic Usage](../guides/basic-usage.md)).
 
 ---
 
@@ -118,7 +118,7 @@ npx @arabold/docs-mcp-server@latest search react "useEffect cleanup" --output ya
 npx @arabold/docs-mcp-server@latest fetch-url https://react.dev/reference/react/useEffect
 ```
 
-The server and CLI share the same local database. Start the server without arguments to run the MCP endpoint and web interface, then use the CLI in parallel to query from an agent or script.
+The server and CLI share the same local database. Start the server without arguments to run the MCP endpoint, then use the CLI in parallel to manage documentation and query from an agent or script.
 
 See **[Basic Usage](../guides/basic-usage.md#-cli-usage)** for the full command reference and output formats.
 
@@ -161,6 +161,5 @@ For production deployments or when you need to scale processing, use Docker Comp
 
 -   **Worker** (port 8080): Handles documentation processing jobs.
 -   **MCP Server** (port 6280): Provides `/sse` endpoint for AI tools.
--   **Web Interface** (port 6281): Browser-based management interface.
 
 See [Deployment Modes](../infrastructure/deployment-modes.md) for more architectural details.
