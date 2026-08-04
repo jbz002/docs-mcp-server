@@ -571,6 +571,12 @@ export async function registerRestService(
 
   // ─── Fetch URL ────────────────────────────────────────────────────
 
+  // Reuse a single FetchUrlTool across requests so its Playwright browser stays
+  // warm — browser cold-start is the dominant cost for JS-heavy SPAs (DingTalk
+  // fetch-url measured ~30s cold vs ~10-15s warm). keepAlive skips the per-request
+  // pipeline/fetcher teardown in FetchUrlTool.execute; lifecycle bound to worker process.
+  let sharedFetchUrlTool: FetchUrlTool | null = null;
+
   api.post("/api/fetch-url", async (request: FastifyRequest, reply: FastifyReply) => {
     await handleRoute(reply, async () => {
       const body = request.body as Record<string, unknown>;
@@ -583,10 +589,15 @@ export async function registerRestService(
         })
         .parse(body);
 
-      const fetcher = new AutoDetectFetcher(config.scraper);
-      const tool = new FetchUrlTool(fetcher, config);
+      if (!sharedFetchUrlTool) {
+        sharedFetchUrlTool = new FetchUrlTool(
+          new AutoDetectFetcher(config.scraper),
+          config,
+          { keepAlive: true },
+        );
+      }
 
-      const markdown = await tool.execute({
+      const markdown = await sharedFetchUrlTool.execute({
         url: parsed.url,
         followRedirects: parsed.followRedirects,
         scrapeMode: parsed.scrapeMode as never,

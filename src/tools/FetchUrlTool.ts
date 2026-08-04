@@ -55,11 +55,22 @@ export class FetchUrlTool {
    * Currently includes HtmlPipeline, MarkdownPipeline, and TextPipeline (as fallback).
    */
   private readonly pipelines: ContentPipeline[];
+  /**
+   * When true, execute() skips closing pipelines/fetcher so the Playwright
+   * browser stays warm across requests (REST fetch-url reuse). Default false
+   * keeps the per-call cleanup MCP/CLI rely on.
+   */
+  private readonly keepAlive: boolean;
 
-  constructor(fetcher: AutoDetectFetcher, config: AppConfig) {
+  constructor(
+    fetcher: AutoDetectFetcher,
+    config: AppConfig,
+    options?: { keepAlive?: boolean },
+  ) {
     this.fetcher = fetcher;
     // Use the central factory to ensure consistent pipeline configuration across the system
     this.pipelines = PipelineFactory.createStandardPipelines(config);
+    this.keepAlive = options?.keepAlive ?? false;
   }
 
   /**
@@ -155,11 +166,15 @@ export class FetchUrlTool {
         this.constructor.name,
       );
     } finally {
-      // Cleanup all pipelines and fetcher to prevent resource leaks (e.g., browser instances)
-      await Promise.allSettled([
-        ...this.pipelines.map((pipeline) => pipeline.close()),
-        this.fetcher.close(),
-      ]);
+      // Cleanup all pipelines and fetcher to prevent resource leaks (e.g., browser
+      // instances). Skipped for keepAlive callers (REST singleton) that reuse the
+      // Playwright browser across requests — their lifecycle is bound to the process.
+      if (!this.keepAlive) {
+        await Promise.allSettled([
+          ...this.pipelines.map((pipeline) => pipeline.close()),
+          this.fetcher.close(),
+        ]);
+      }
     }
   }
 }
