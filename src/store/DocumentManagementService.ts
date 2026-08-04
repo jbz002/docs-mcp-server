@@ -648,4 +648,38 @@ export class DocumentManagementService {
     }
     await this.store.clearCrawlResults(versionId);
   }
+
+  /**
+   * Lists only the urls of crawl_results for a version. Resume uses this to
+   * seed visited (skip already-crawled pages) without loading text_content.
+   * Empty if the version does not exist.
+   */
+  async listCrawlResultUrls(
+    library: string,
+    version: string | null | undefined,
+  ): Promise<string[]> {
+    const normalizedVersion = this.normalizeVersion(version);
+    const versionId = await this.store.getVersionIdByName(library, normalizedVersion);
+    if (versionId === null) {
+      return [];
+    }
+    return this.store.listCrawlResultUrls(versionId);
+  }
+
+  /**
+   * Lists url/depth/links for a version. Resume uses this to reconstruct the
+   * uncrawled frontier from stored links of already-crawled pages. Empty if
+   * the version does not exist.
+   */
+  async listCrawlResultsForResume(
+    library: string,
+    version: string | null | undefined,
+  ): Promise<Array<{ url: string; depth: number | null; links: string | null }>> {
+    const normalizedVersion = this.normalizeVersion(version);
+    const versionId = await this.store.getVersionIdByName(library, normalizedVersion);
+    if (versionId === null) {
+      return [];
+    }
+    return this.store.listCrawlResultsForResume(versionId);
+  }
 }

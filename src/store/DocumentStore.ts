@@ -164,8 +164,11 @@ export class DocumentStore {
         string | null,
         string | null,
         number | null,
+        string | null,
       ]
     >;
+    getCrawlResultUrlsByVersion: Database.Statement<[number]>;
+    getCrawlResultsForResumeByVersion: Database.Statement<[number]>;
     getCrawlResultsByVersion: Database.Statement<[number, number, number]>;
     countCrawlResults: Database.Statement<[number]>;
     clearCrawlResultsByVersion: Database.Statement<[number]>;
@@ -482,13 +485,22 @@ export class DocumentStore {
           string | null,
           string | null,
           number | null,
+          string | null,
         ]
       >(
-        `INSERT INTO crawl_results (version_id, job_id, url, title, text_content, content_type, depth)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO crawl_results (version_id, job_id, url, title, text_content, content_type, depth, links)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(version_id, url) DO UPDATE SET
            job_id = excluded.job_id, title = excluded.title, text_content = excluded.text_content,
-           content_type = excluded.content_type, depth = excluded.depth`,
+           content_type = excluded.content_type, depth = excluded.depth, links = excluded.links`,
+      ),
+      // urls-only: resume seed 只需 url 列,避免拉 text_content(大字段)
+      getCrawlResultUrlsByVersion: this.db.prepare<[number]>(
+        "SELECT url FROM crawl_results WHERE version_id = ?",
+      ),
+      // resume frontier 重建:url/depth/links(已爬页出链,用于发现未爬页)
+      getCrawlResultsForResumeByVersion: this.db.prepare<[number]>(
+        "SELECT url, depth, links FROM crawl_results WHERE version_id = ?",
       ),
       getCrawlResultsByVersion: this.db.prepare<[number, number, number]>(
         `SELECT url, title, text_content AS textContent, content_type AS contentType, depth
@@ -1389,6 +1401,8 @@ export class DocumentStore {
         signal: _signal,
         initialQueue: _initialQueue,
         isRefresh: _isRefresh,
+        resumeFromUrls: _resumeFromUrls,
+        resumeFromQueue: _resumeFromQueue,
         ...scraper_options
       } = options;
 
@@ -1968,6 +1982,7 @@ export class DocumentStore {
         result.textContent ?? null,
         result.contentType ?? null,
         depth,
+        JSON.stringify(result.links ?? []),
       );
     } catch (error) {
       throw new ConnectionError("Failed to upsert crawl_result", error);
@@ -2016,6 +2031,39 @@ export class DocumentStore {
       return row?.count ?? 0;
     } catch (error) {
       throw new ConnectionError("Failed to count crawl_results", error);
+    }
+  }
+
+  /**
+   * Lists only the url column of crawl_results for a version. Used by resume
+   * to seed visited without loading large text_content blobs.
+   */
+  async listCrawlResultUrls(versionId: number): Promise<string[]> {
+    try {
+      const rows = this.statements.getCrawlResultUrlsByVersion.all(versionId) as
+        | Array<{ url: string }>
+        | undefined;
+      return (rows ?? []).map((r) => r.url);
+    } catch (error) {
+      throw new ConnectionError("Failed to list crawl_result urls", error);
+    }
+  }
+
+  /**
+   * Lists url/depth/links for a version. Used by resume to reconstruct the
+   * uncrawled frontier from stored links of already-crawled pages.
+   * links is a JSON-encoded string (or NULL for pre-migration rows).
+   */
+  async listCrawlResultsForResume(
+    versionId: number,
+  ): Promise<Array<{ url: string; depth: number | null; links: string | null }>> {
+    try {
+      const rows = this.statements.getCrawlResultsForResumeByVersion.all(versionId) as
+        | Array<{ url: string; depth: number | null; links: string | null }>
+        | undefined;
+      return rows ?? [];
+    } catch (error) {
+      throw new ConnectionError("Failed to list crawl_results for resume", error);
     }
   }
 

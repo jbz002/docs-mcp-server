@@ -464,6 +464,20 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
     this.completedChildPageAttempts = 0;
     this.failedChildPages = 0;
 
+    // Resume: pre-seed visited with already-crawled URLs so they are neither
+    // re-fetched nor re-stored. visited dedup happens at enqueue (processBatch
+    // never re-checks it), so seeded URLs are never fetched and their links are
+    // NOT re-extracted — the uncrawled frontier must come via resumeFromQueue.
+    if (options.resumeFromUrls && options.resumeFromUrls.length > 0) {
+      const seedNormOpts = this.getUrlNormalizerOptions(options);
+      for (const u of options.resumeFromUrls) {
+        this.visited.add(normalizeUrl(u, seedNormOpts));
+      }
+      logger.info(
+        `▶️ Resume: pre-seeded visited with ${options.resumeFromUrls.length} already-crawled URLs`,
+      );
+    }
+
     // Check if this is a refresh operation with pre-populated queue
     const initialQueue = options.initialQueue || [];
     const isRefreshMode = initialQueue.length > 0;
@@ -497,6 +511,29 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
           queue.push(item);
         }
       }
+    }
+
+    // Resume: inject the discovered-but-not-crawled frontier (reconstructed
+    // from stored links of already-crawled pages). Runs before root enqueue so
+    // root dedup still applies (root is in resumeFromUrls → visited → skipped
+    // below). scope + visited dedup via shouldProcessUrl/normalizeUrl.
+    if (options.resumeFromQueue && options.resumeFromQueue.length > 0) {
+      const frontierNormOpts = this.getUrlNormalizerOptions(options);
+      let injected = 0;
+      for (const item of options.resumeFromQueue) {
+        try {
+          if (!this.shouldProcessUrl(item.url, options, {})) continue;
+          const n = normalizeUrl(item.url, frontierNormOpts);
+          if (!this.visited.has(n)) {
+            this.visited.add(n);
+            queue.push(item);
+            injected++;
+          }
+        } catch {
+          /* invalid url, skip */
+        }
+      }
+      logger.info(`▶️ Resume: injected ${injected} frontier URLs from stored links`);
     }
 
     // If root URL wasn't in initialQueue, add it now at depth 0

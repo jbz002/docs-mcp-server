@@ -153,6 +153,22 @@ export interface ScraperOptions {
    * @default false
    */
   crawlOnly?: boolean;
+  /**
+   * Resume hint (runtime-injected by PipelineWorker, never persisted): URLs of
+   * pages already crawled in a prior interrupted run of the same version. The
+   * strategy pre-seeds `visited` so they are neither re-fetched nor re-stored.
+   * Because visited dedup happens at enqueue (processBatch never re-checks it),
+   * seeded URLs' links are NOT re-extracted — the uncrawled frontier must be
+   * supplied via resumeFromQueue.
+   */
+  resumeFromUrls?: string[];
+  /**
+   * Resume hint: discovered-but-not-crawled frontier reconstructed from stored
+   * links of already-crawled pages. Enqueued (after scope + visited dedup) so
+   * resume reaches uncrawled pages behind crawled intermediates without
+   * re-fetching the intermediates.
+   */
+  resumeFromQueue?: QueueItem[];
 }
 
 /**

@@ -81,6 +81,51 @@ export class PipelineWorker {
         logger.info(message);
       }
 
+      // Resume (crawlOnly): seed visited with already-crawled URLs and inject
+      // the uncrawled frontier reconstructed from their stored links, so resume
+      // skips finished pages and continues crawling the remaining ones.
+      if (scraperOptions.crawlOnly && job.isResume) {
+        try {
+          const rows = await this.store.listCrawlResultsForResume(library, version);
+          if (rows.length > 0) {
+            const crawled = new Set<string>(rows.map((r) => r.url));
+            scraperOptions.resumeFromUrls = Array.from(crawled);
+
+            // frontier = union(links) - crawled; depth = min(linker depth)+1
+            const frontierDepth = new Map<string, number>();
+            for (const r of rows) {
+              if (!r.links) continue;
+              let outgoing: string[] = [];
+              try {
+                const parsed = JSON.parse(r.links);
+                if (Array.isArray(parsed)) {
+                  outgoing = parsed.filter((x): x is string => typeof x === "string");
+                }
+              } catch {
+                /* malformed links JSON, skip */
+              }
+              const linkerDepth = r.depth ?? 0;
+              for (const linkUrl of outgoing) {
+                if (crawled.has(linkUrl)) continue;
+                const childDepth = linkerDepth + 1;
+                const prev = frontierDepth.get(linkUrl);
+                if (prev === undefined || childDepth < prev) {
+                  frontierDepth.set(linkUrl, childDepth);
+                }
+              }
+            }
+            scraperOptions.resumeFromQueue = Array.from(frontierDepth.entries()).map(
+              ([u, depth]) => ({ url: u, depth }),
+            );
+            logger.info(
+              `[${jobId}] Resume: ${crawled.size} crawled urls, ${frontierDepth.size} frontier urls reconstructed`,
+            );
+          }
+        } catch (err) {
+          logger.warn(`[${jobId}] Resume seed failed (non-fatal): ${err}`);
+        }
+      }
+
       // --- Core Job Logic ---
       await this.scraperService.scrape(
         scraperOptions,

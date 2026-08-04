@@ -1477,4 +1477,40 @@ describe("BaseScraperStrategy", () => {
       expect(page2Progress![0].pageId).toBe(102);
     });
   });
+
+  it("should seed visited from resumeFromUrls and crawl resumeFromQueue frontier", async () => {
+    const options: ScraperOptions = {
+      url: "https://example.com/",
+      library: "test",
+      version: "1.0.0",
+      maxPages: 10,
+      maxDepth: 2,
+      crawlOnly: true,
+      // 已爬页(root + page1)→ seed visited,不重抓
+      resumeFromUrls: ["https://example.com/", "https://example.com/page1"],
+      // 未爬 frontier → enqueue 并抓取
+      resumeFromQueue: [{ url: "https://example.com/page2", depth: 1 }],
+    };
+    const progressCallback = vi.fn<ProgressCallback<ScraperProgressEvent>>();
+
+    strategy.processItem.mockResolvedValue({
+      content: {
+        textContent: "x",
+        metadata: {},
+        links: [],
+        errors: [],
+        chunks: [],
+      },
+      links: [],
+      status: FetchStatus.SUCCESS,
+    });
+
+    await strategy.scrape(options, progressCallback);
+
+    // root + page1 被 seed 进 visited 跳过;只有 page2(frontier)被处理
+    expect(strategy.processItem).toHaveBeenCalledTimes(1);
+    expect(strategy.processItem.mock.calls[0][0].url).toBe("https://example.com/page2");
+    // visited 至少含 root + page1(seed) + page2(frontier)
+    expect(strategy.getVisitedUrls().size).toBeGreaterThanOrEqual(3);
+  });
 });
