@@ -127,6 +127,73 @@ describe("HtmlToMarkdownMiddleware", () => {
     // No close needed
   });
 
+  it("should flatten nested lists in table cells into GFM table (not raw HTML)", async () => {
+    const middleware = new HtmlToMarkdownMiddleware();
+    // Mirrors DingTalk API param tables: a cell with a lead-in paragraph
+    // followed by a <ul> whose <li>s wrap paragraphs and links.
+    const html = `
+      <html><body>
+        <table>
+          <thead><tr><th>名称</th><th>描述</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>x-acs-dingtalk-access-token</td>
+              <td>获取方式：<ul><li><p>企业内部应用，调用<a href="/internal">内部token</a>接口获取。</p></li><li><p>第三方应用，调用<a href="/third">三方token</a>接口获取。</p></li></ul></td>
+            </tr>
+          </tbody>
+        </table>
+      </body></html>`;
+    const context = createMockContext(html);
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await middleware.process(context, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(context.errors).toHaveLength(0);
+    // Rendered as a GFM table (separator + data row with pipe delimiters).
+    expect(context.content).toContain("| --- | --- |");
+    expect(context.content).toMatch(/\| x-acs-dingtalk-access-token \|/);
+    // Lead-in text and both list items retained, joined into one cell.
+    expect(context.content).toContain("获取方式：");
+    expect(context.content).toContain("企业内部应用");
+    expect(context.content).toContain("第三方应用");
+    // Links survive inside the flattened cell.
+    expect(context.content).toContain("[内部token](/internal)");
+    expect(context.content).toContain("[三方token](/third)");
+    // Not preserved as raw HTML.
+    expect(context.content).not.toContain("joplin-table-wrapper");
+    expect(context.content).not.toContain("<ul");
+    expect(context.content).not.toContain("<table");
+  });
+
+  it("should flatten headings and blockquotes inside table cells", async () => {
+    const middleware = new HtmlToMarkdownMiddleware();
+    const html = `
+      <html><body>
+        <table>
+          <thead><tr><th>col</th></tr></thead>
+          <tbody>
+            <tr><td><h3>Title</h3>body<blockquote>note</blockquote></td></tr>
+          </tbody>
+        </table>
+      </body></html>`;
+    const context = createMockContext(html);
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await middleware.process(context, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(context.errors).toHaveLength(0);
+    expect(context.content).toContain("| --- |");
+    expect(context.content).toContain("col");
+    expect(context.content).toContain("Title");
+    expect(context.content).toContain("body");
+    expect(context.content).toContain("note");
+    expect(context.content).not.toContain("joplin-table-wrapper");
+    expect(context.content).not.toContain("<h3");
+    expect(context.content).not.toContain("<blockquote");
+  });
+
   it("should split oversized tables before GFM conversion while retaining content", async () => {
     const middleware = new HtmlToMarkdownMiddleware();
     const rows = Array.from(

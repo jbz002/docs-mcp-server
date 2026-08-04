@@ -160,6 +160,66 @@ export class HtmlToMarkdownMiddleware implements ContentProcessorMiddleware {
     });
   }
 
+  /**
+   * Flatten block-level elements nested inside table cells so the GFM table
+   * plugin converts them to Markdown instead of preserving raw HTML.
+   *
+   * `@joplin/turndown-plugin-gfm` keeps a table as raw HTML (wrapped in
+   * `<div class="joplin-table-wrapper">`) whenever any cell contains UL/OL/
+   * H1-H6/HR/BLOCKQUOTE — it cannot express those in a GFM table cell.
+   * Paragraphs are not in that list, but Turndown renders them with blank-line
+   * separators that would shatter the GFM table row, so they are unwrapped too.
+   * Links and inline code are left intact for Turndown to convert normally.
+   *
+   * List items join with "; " (GFM cells cannot span newlines without breaking
+   * the table row).
+   */
+  private flattenTableBlockContent($: cheerio.CheerioAPI, source: string): void {
+    const blockSelector = "ul, ol, h1, h2, h3, h4, h5, h6, blockquote, hr";
+    let blocks = 0;
+    let paragraphs = 0;
+
+    $("table td, table th").each((_index, cell) => {
+      const $cell = $(cell);
+
+      $cell.find(blockSelector).each((_i, block) => {
+        const element = block as Element;
+        const tag = element.tagName?.toLowerCase();
+        if (!tag) return;
+        const $block = $(element);
+        if (tag === "ul" || tag === "ol") {
+          // Use innerHTML (not text) so inline links/code/strong survive for
+          // Turndown to convert; any nested <p> is unwrapped by the pass below.
+          const items = $block
+            .children("li")
+            .toArray()
+            .map((li) => ($(li).html() || "").trim())
+            .filter(Boolean);
+          $block.replaceWith(items.length ? ` ${items.join("; ")} ` : "");
+        } else if (tag === "hr") {
+          $block.replaceWith(" ");
+        } else {
+          // headings + blockquote collapse to inline text
+          $block.replaceWith(` ${$block.text().trim()} `);
+        }
+        blocks++;
+      });
+
+      // Unwrap paragraphs so Turndown does not inject row-breaking blank lines.
+      $cell.find("p").each((_i, paragraph) => {
+        const $paragraph = $(paragraph);
+        $paragraph.replaceWith($paragraph.html() || "");
+        paragraphs++;
+      });
+    });
+
+    if (blocks || paragraphs) {
+      logger.debug(
+        `Flattened ${blocks} block(s) and unwrapped ${paragraphs} paragraph(s) in table cells for ${source}`,
+      );
+    }
+  }
+
   private buildSplitTableHtml(
     $: cheerio.CheerioAPI,
     $table: cheerio.Cheerio<Element>,
@@ -252,6 +312,7 @@ export class HtmlToMarkdownMiddleware implements ContentProcessorMiddleware {
       logger.debug(`Converting HTML content to Markdown for ${context.source}`);
       this.preservedTableHtml.clear();
       this.splitOversizedTables($, context.source);
+      this.flattenTableBlockContent($, context.source);
       // Provide Turndown with the HTML string content from the Cheerio object's body,
       // or the whole document if body is empty/unavailable.
       const htmlToConvert = $("body").html() || $.html();
