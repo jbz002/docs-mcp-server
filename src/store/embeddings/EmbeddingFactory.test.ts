@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { BedrockEmbeddings } from "@langchain/aws";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 import { VertexAIEmbeddings } from "@langchain/google-vertexai";
@@ -199,6 +201,78 @@ describe("createEmbeddingModel", () => {
     const model = createEmbeddingModel("openai:mistral-embed", runtimeConfig);
     expect(model).toBeInstanceOf(OpenAIEmbeddings);
     expect(model).toMatchObject({ encodingFormat: "float" });
+  });
+
+  describe("providers that ignore encoding_format", () => {
+    /**
+     * Stands in for Mistral / LM Studio / Ollama: accepts `encoding_format` and
+     * then ignores it, always replying with JSON float arrays. Reproduces #469
+     * without needing an API key or a paid provider.
+     */
+    function startProvider(nativeDimension: number) {
+      const received: Array<string | undefined> = [];
+      const server = createServer((req, res) => {
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+        req.on("end", () => {
+          received.push(JSON.parse(body || "{}").encoding_format);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              object: "list",
+              model: "mistral-embed",
+              data: [
+                {
+                  object: "embedding",
+                  index: 0,
+                  embedding: Array.from(
+                    { length: nativeDimension },
+                    (_, i) => Math.sin(i + 1) * 0.05,
+                  ),
+                },
+              ],
+              usage: { prompt_tokens: 1, total_tokens: 1 },
+            }),
+          );
+        });
+      });
+      return { server, received };
+    }
+
+    test("should store full-length non-zero vectors from a float-only provider", async () => {
+      const nativeDimension = 1024;
+      const { server, received } = startProvider(nativeDimension);
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", () => resolve()),
+      );
+      const { port } = server.address() as AddressInfo;
+
+      try {
+        vi.stubGlobal("process", {
+          env: {
+            OPENAI_API_KEY: "test-openai-key",
+            OPENAI_API_BASE: `http://127.0.0.1:${port}/v1`,
+          },
+        });
+
+        const model = createEmbeddingModel("openai:mistral-embed", {
+          vectorDimension: nativeDimension,
+        });
+        const vector = await model.embedQuery("test");
+
+        // Pre-fix, the OpenAI SDK sent `encoding_format: "base64"` and then
+        // base64-decoded the JSON floats, yielding 256 zeros instead of 1024
+        // values — silently, with no error raised.
+        expect(received).toEqual(["float"]);
+        expect(vector).toHaveLength(nativeDimension);
+        expect(vector.every((value) => value === 0)).toBe(false);
+        expect(vector.filter((value) => value !== 0)).toHaveLength(nativeDimension);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
   });
 
   describe("OPENAI_API_BASE handling", () => {
