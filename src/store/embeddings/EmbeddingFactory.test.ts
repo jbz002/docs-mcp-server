@@ -191,6 +191,16 @@ describe("createEmbeddingModel", () => {
     });
   });
 
+  test("should request float encoding for OpenAI-compatible providers", () => {
+    // Regression guard for #469: without an explicit encodingFormat the OpenAI SDK
+    // sends `encoding_format: "base64"` and then base64-decodes the reply. Providers
+    // that ignore the parameter return JSON floats, which decode into an all-zero
+    // vector a quarter of the native length.
+    const model = createEmbeddingModel("openai:mistral-embed", runtimeConfig);
+    expect(model).toBeInstanceOf(OpenAIEmbeddings);
+    expect(model).toMatchObject({ encodingFormat: "float" });
+  });
+
   describe("OPENAI_API_BASE handling", () => {
     test("should use sanitized OPENAI_API_BASE values", () => {
       const env = {
