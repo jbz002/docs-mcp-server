@@ -2246,10 +2246,15 @@ export class DocumentStore {
               dv.rowid as id,
               dv.distance as vec_distance
             FROM documents_vec dv
+            JOIN documents d ON dv.rowid = d.id
             WHERE dv.library_id = ?
               AND dv.version_id = ?
               AND dv.embedding MATCH ?
               AND dv.k = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM json_each(json_extract(d.metadata, '$.types')) je
+                WHERE je.value = 'structural'
+              )
             ORDER BY dv.distance
           ),
           fts_scores AS (
@@ -2261,6 +2266,10 @@ export class DocumentStore {
             JOIN pages p ON d.page_id = p.id
             WHERE p.version_id = ?
               AND documents_fts MATCH ?
+              AND NOT EXISTS (
+                SELECT 1 FROM json_each(json_extract(d.metadata, '$.types')) je
+                WHERE je.value = 'structural'
+              )
             ORDER BY fts_score
             LIMIT ?
           )
@@ -2279,10 +2288,6 @@ export class DocumentStore {
           LEFT JOIN vec_distances v ON d.id = v.id
           LEFT JOIN fts_scores f ON d.id = f.id
           WHERE (v.id IS NOT NULL OR f.id IS NOT NULL)
-            AND NOT EXISTS (
-              SELECT 1 FROM json_each(json_extract(d.metadata, '$.types')) je
-              WHERE je.value = 'structural'
-            )
         `);
 
         const rawResults = stmt.all(
