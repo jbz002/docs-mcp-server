@@ -307,11 +307,14 @@ describe("createEmbeddingModel", () => {
       expect((model as any).encodingFormat).toBe("float");
     });
 
-    test("should not forward dimensions or encodingFormat by default", () => {
+    test("should not forward dimensions by default but always request float encoding", () => {
       const model = createEmbeddingModel("text-embedding-3-small", runtimeConfig);
       expect(model).toBeInstanceOf(OpenAIEmbeddings);
       expect((model as any).dimensions).toBeUndefined();
-      expect((model as any).encodingFormat).toBeUndefined();
+      // encodingFormat is always "float": the OpenAI SDK otherwise sends
+      // `encoding_format: "base64"` and base64-decodes replies from providers
+      // that ignore the parameter, silently corrupting the vector (#469).
+      expect((model as any).encodingFormat).toBe("float");
     });
   });
 });
