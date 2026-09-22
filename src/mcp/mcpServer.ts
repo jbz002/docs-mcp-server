@@ -23,11 +23,11 @@ export function createMcpServerInstance(tools: McpServerTools): McpServer {
       // KB search tools so models route "library API docs" questions here and
       // internal-document questions elsewhere.
       instructions:
-        "Up-to-date documentation retrieval for open-source libraries, frameworks, and packages " +
-        "(API references, guides, code examples, version resolution). " +
-        "Use this server for questions about third-party library/framework usage, APIs, and versions. " +
-        "It does NOT index internal company knowledge bases — route questions about internal company " +
-        "documents, policies, or project material to the internal KB search tools instead.",
+        "API and technical documentation retrieval: how to call APIs, endpoints, parameters, SDK " +
+        "usage, code examples, and version resolution — covers open-source libraries/frameworks " +
+        "and internal company systems alike. Use this server for developer-facing technical " +
+        "questions. Non-technical company knowledge (policies, processes, manuals, project " +
+        "material) belongs to the internal KB search tools instead.",
       capabilities: {
         tools: {},
         resources: {},
@@ -40,8 +40,8 @@ export function createMcpServerInstance(tools: McpServerTools): McpServer {
   // Search docs tool
   server.tool(
     "search_docs",
-    "Search up-to-date official documentation for an open-source library/framework/package " +
-      "(third-party library docs only — NOT internal company documents). Examples:\n\n" +
+    "Search up-to-date API and technical documentation for a library, framework, package, or " +
+      "internal company system (endpoints, parameters, SDK usage, code examples). Examples:\n\n" +
       '- {library: "react", query: "hooks lifecycle"} -> matches latest version of React\n' +
       '- {library: "react", version: "18.0.0", query: "hooks lifecycle"} -> matches React 18.0.0 or earlier\n' +
       '- {library: "typescript", version: "5.x", query: "ReturnType example"} -> any TypeScript 5.x.x version\n' +
@@ -104,7 +104,7 @@ ${r.content}\n`,
   // List libraries tool
   server.tool(
     "list_libraries",
-    "List all indexed open-source libraries (the docs index scope of this server).",
+    "List all indexed documentation sources (libraries, frameworks, packages, internal systems).",
     {
       // no params
     },
@@ -138,7 +138,7 @@ ${r.content}\n`,
   // Find version tool
   server.tool(
     "find_version",
-    "Find the best matching version for an open-source library. Use to identify available or closest versions.",
+    "Find the best matching version for a documented library or system. Use to identify available or closest versions.",
     {
       library: z.string().trim().describe("Library name."),
       targetVersion: z
@@ -176,6 +176,10 @@ ${r.content}\n`,
   );
 
   // Fetch URL tool
+  // Disabled (2026-09-22): generic web-page fetching overlaps with other
+  // tooling and is out of this server's API-docs-retrieval scope. Kept as a
+  // comment for easy re-enable.
+  /*
   server.tool(
     "fetch_url",
     "Fetch a single URL and convert its content to Markdown. Use this tool to read the content of any web page.",
@@ -210,6 +214,7 @@ ${r.content}\n`,
       }
     },
   );
+  */
 
   // --- Resource Definitions ---
 
