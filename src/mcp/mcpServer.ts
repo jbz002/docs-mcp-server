@@ -18,6 +18,16 @@ export function createMcpServerInstance(tools: McpServerTools): McpServer {
       version: "0.1.0",
     },
     {
+      // Server-level description surfaced to LLM clients via the MCP
+      // initialize handshake. Positions this server against internal-company
+      // KB search tools so models route "library API docs" questions here and
+      // internal-document questions elsewhere.
+      instructions:
+        "Up-to-date documentation retrieval for open-source libraries, frameworks, and packages " +
+        "(API references, guides, code examples, version resolution). " +
+        "Use this server for questions about third-party library/framework usage, APIs, and versions. " +
+        "It does NOT index internal company knowledge bases — route questions about internal company " +
+        "documents, policies, or project material to the internal KB search tools instead.",
       capabilities: {
         tools: {},
         resources: {},
@@ -30,7 +40,8 @@ export function createMcpServerInstance(tools: McpServerTools): McpServer {
   // Search docs tool
   server.tool(
     "search_docs",
-    "Search up-to-date documentation for a library or package. Examples:\n\n" +
+    "Search up-to-date official documentation for an open-source library/framework/package " +
+      "(third-party library docs only — NOT internal company documents). Examples:\n\n" +
       '- {library: "react", query: "hooks lifecycle"} -> matches latest version of React\n' +
       '- {library: "react", version: "18.0.0", query: "hooks lifecycle"} -> matches React 18.0.0 or earlier\n' +
       '- {library: "typescript", version: "5.x", query: "ReturnType example"} -> any TypeScript 5.x.x version\n' +
@@ -93,7 +104,7 @@ ${r.content}\n`,
   // List libraries tool
   server.tool(
     "list_libraries",
-    "List all indexed libraries.",
+    "List all indexed open-source libraries (the docs index scope of this server).",
     {
       // no params
     },
@@ -127,7 +138,7 @@ ${r.content}\n`,
   // Find version tool
   server.tool(
     "find_version",
-    "Find the best matching version for a library. Use to identify available or closest versions.",
+    "Find the best matching version for an open-source library. Use to identify available or closest versions.",
     {
       library: z.string().trim().describe("Library name."),
       targetVersion: z
