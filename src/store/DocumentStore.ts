@@ -1,9 +1,11 @@
+import { statSync } from "node:fs";
 import type { Embeddings } from "@langchain/core/embeddings";
 import Database, { type Database as DatabaseType } from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import type { ScrapeResult, ScraperOptions } from "../scraper/types";
 import { type AppConfig, isVectorDimensionExplicit } from "../utils/config";
 import { logger } from "../utils/logger";
+import { MimeTypeUtils } from "../utils/mimeTypeUtils";
 import { compareVersionsDescending } from "../utils/version";
 import { applyMigrations } from "./applyMigrations";
 import { EmbeddingConfig, type EmbeddingModelConfig } from "./embeddings/EmbeddingConfig";
@@ -20,7 +22,19 @@ import {
   EmbeddingModelChangedError,
   StoreError,
 } from "./errors";
-import type { DbChunkMetadata, DbChunkRank, StoredScraperOptions } from "./types";
+import type {
+  ActivityHistory,
+  CompactResult,
+  DbChunkMetadata,
+  DbChunkRank,
+  LibraryVersionSummary,
+  ListVersionChunksOptions,
+  ListVersionChunksResult,
+  StoredScraperOptions,
+  VersionChunkListItem,
+  VersionChunkStats,
+  VersionComposition,
+} from "./types";
 import {
   type DbChunk,
   type DbLibraryVersion,
@@ -30,6 +44,8 @@ import {
   type DbVersion,
   type DbVersionWithLibrary,
   denormalizeVersionName,
+  normalizeLibraryName,
+  normalizeVersionLabel,
   normalizeVersionName,
   type VersionScraperOptions,
   type VersionStatus,
@@ -61,6 +77,38 @@ interface EmbeddingBatchContext {
 }
 
 /**
+ * Whether a competing representation should be turned away.
+ *
+ * A page reachable as both a published Markdown file and an HTML page produces
+ * two writes under one identity, and which arrives last is an accident of crawl
+ * order. Markdown the site publishes is what its authors wrote for machine
+ * consumption, so it wins; converting HTML ourselves is the fallback for sites
+ * offering nothing better. A `.md` URL answered as `text/plain` counts as
+ * Markdown — see `WebScraperStrategy.asMarkdownRepresentation`.
+ *
+ * Only applies between representations seen in the same crawl. A first write
+ * for an identity always lands, so a later crawl's answer supersedes an earlier
+ * crawl's rather than being blocked by it.
+ */
+function losesToStoredRepresentation(
+  stored: PageIdRow | undefined,
+  incomingSourceContentType: string | null | undefined,
+  isAdditionalRepresentation: boolean | undefined,
+): boolean {
+  if (!stored || !isAdditionalRepresentation) return false;
+  return (
+    MimeTypeUtils.isMarkdown(stored.source_content_type ?? "") &&
+    !MimeTypeUtils.isMarkdown(incomingSourceContentType ?? "")
+  );
+}
+
+/** The row `getPageId` returns. Declared once so its two readers agree. */
+interface PageIdRow {
+  id: number;
+  source_content_type: string | null;
+}
+
+/**
  * Manages document storage and retrieval using SQLite with vector and full-text search capabilities.
  * Provides direct access to SQLite with prepared statements to store and query document
  * embeddings along with their metadata. Supports versioned storage of documents for different
@@ -68,6 +116,7 @@ interface EmbeddingBatchContext {
  */
 export class DocumentStore {
   private readonly config: AppConfig;
+  private readonly dbPath: string;
 
   private readonly db: DatabaseType;
   private embeddings: Embeddings | null = null;
@@ -112,6 +161,7 @@ export class DocumentStore {
         string | null,
         string | null,
         number | null,
+        string | null,
       ]
     >;
     getPageId: Database.Statement<[number, string]>;
@@ -142,7 +192,7 @@ export class DocumentStore {
     queryVersionsByLibraryId: Database.Statement<[number]>;
     // Status tracking statements
     updateVersionStatus: Database.Statement<[string, string | null, number]>;
-    updateVersionProgress: Database.Statement<[number, number, number]>;
+    updateVersionProgress: Database.Statement<[number, number, number | null, number]>;
     getVersionsByStatus: Database.Statement<string[]>;
     // Scraper options statements
     updateVersionScraperOptions: Database.Statement<[string, string, number]>;
@@ -228,6 +278,7 @@ export class DocumentStore {
     if (!dbPath) {
       throw new StoreError("Missing required database path");
     }
+    this.dbPath = dbPath;
     this.config = appConfig;
     this.dbDimension = this.config.embeddings.vectorDimension;
     this.searchWeightVec = this.config.search.weightVec;
@@ -268,7 +319,7 @@ export class DocumentStore {
   private prepareStatements(): void {
     const statements = {
       getById: this.db.prepare<[bigint]>(
-        `SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type 
+        `SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type, p.content_url 
          FROM documents d
          JOIN pages p ON d.page_id = p.id
          WHERE d.id = ?`,
@@ -290,12 +341,14 @@ export class DocumentStore {
           string | null,
           string | null,
           number | null,
+          string | null,
         ]
       >(
-        "INSERT INTO pages (version_id, url, title, etag, last_modified, source_content_type, content_type, depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(version_id, url) DO UPDATE SET title = excluded.title, source_content_type = excluded.source_content_type, content_type = excluded.content_type, etag = excluded.etag, last_modified = excluded.last_modified, depth = excluded.depth",
+        "INSERT INTO pages (version_id, url, title, etag, last_modified, source_content_type, content_type, depth, content_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(version_id, url) DO UPDATE SET title = excluded.title, source_content_type = excluded.source_content_type, content_type = excluded.content_type, etag = excluded.etag, last_modified = excluded.last_modified, depth = excluded.depth, content_url = excluded.content_url",
       ),
+      // Returns the row shape described by `PageIdRow`.
       getPageId: this.db.prepare<[number, string]>(
-        "SELECT id FROM pages WHERE version_id = ? AND url = ?",
+        "SELECT id, source_content_type FROM pages WHERE version_id = ? AND url = ?",
       ),
       insertLibrary: this.db.prepare<[string]>(
         "INSERT INTO libraries (name) VALUES (?) ON CONFLICT(name) DO NOTHING",
@@ -369,8 +422,10 @@ export class DocumentStore {
           COALESCE(v.name, '') as version,
           v.id as versionId,
           v.status as status,
+          v.error_message as errorMessage,
           v.progress_pages as progressPages,
           v.progress_max_pages as progressMaxPages,
+          v.progress_pages_indexed as progressPagesIndexed,
           v.source_url as sourceUrl,
           -- "Last indexed" = when the version was last (re)indexed. Use the
           -- version's updated_at (bumped on every status/progress change during
@@ -390,7 +445,7 @@ export class DocumentStore {
       getChildChunks: this.db.prepare<
         [string, string, string, number, string, bigint, number]
       >(`
-        SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type FROM documents d
+        SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type, p.content_url FROM documents d
         JOIN pages p ON d.page_id = p.id
         JOIN versions v ON p.version_id = v.id
         JOIN libraries l ON v.library_id = l.id
@@ -406,7 +461,7 @@ export class DocumentStore {
       getPrecedingSiblings: this.db.prepare<
         [string, string, string, bigint, string, number]
       >(`
-        SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type FROM documents d
+        SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type, p.content_url FROM documents d
         JOIN pages p ON d.page_id = p.id
         JOIN versions v ON p.version_id = v.id
         JOIN libraries l ON v.library_id = l.id
@@ -421,7 +476,7 @@ export class DocumentStore {
       getSubsequentSiblings: this.db.prepare<
         [string, string, string, bigint, string, number]
       >(`
-        SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type FROM documents d
+        SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type, p.content_url FROM documents d
         JOIN pages p ON d.page_id = p.id
         JOIN versions v ON p.version_id = v.id
         JOIN libraries l ON v.library_id = l.id
@@ -434,7 +489,7 @@ export class DocumentStore {
         LIMIT ?
       `),
       getParentChunk: this.db.prepare<[string, string, string, string, bigint]>(`
-        SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type FROM documents d
+        SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type, p.content_url FROM documents d
         JOIN pages p ON d.page_id = p.id
         JOIN versions v ON p.version_id = v.id
         JOIN libraries l ON v.library_id = l.id
@@ -450,8 +505,8 @@ export class DocumentStore {
       updateVersionStatus: this.db.prepare<[string, string | null, number]>(
         "UPDATE versions SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       ),
-      updateVersionProgress: this.db.prepare<[number, number, number]>(
-        "UPDATE versions SET progress_pages = ?, progress_max_pages = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      updateVersionProgress: this.db.prepare<[number, number, number | null, number]>(
+        "UPDATE versions SET progress_pages = ?, progress_max_pages = ?, progress_pages_indexed = COALESCE(?, progress_pages_indexed), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       ),
       getVersionsByStatus: this.db.prepare<[string]>(
         "SELECT v.*, l.name as library_name FROM versions v JOIN libraries l ON v.library_id = l.id WHERE v.status IN (SELECT value FROM json_each(?))",
@@ -566,8 +621,11 @@ export class DocumentStore {
     const stmt = this.db.prepare<[string, string]>(
       "INSERT INTO metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     );
-    stmt.run("embedding_model", model);
-    stmt.run("embedding_dimension", String(dimension));
+    const persist = this.db.transaction(() => {
+      stmt.run("embedding_model", model);
+      stmt.run("embedding_dimension", String(dimension));
+    });
+    persist();
   }
 
   private getStoredDimensionForCurrentModel(): number | null {
@@ -992,6 +1050,15 @@ export class DocumentStore {
   }
 
   /**
+   * Escapes SQL LIKE wildcard characters (`%`, `_`) and the escape character
+   * itself so a user-supplied filter is matched as a literal substring rather
+   * than interpreted as a pattern. Pair with `LIKE ? ESCAPE '\'`.
+   */
+  private escapeLikePattern(value: string): string {
+    return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+  }
+
+  /**
    * Initializes database connection and ensures readiness
    */
   async initialize(): Promise<void> {
@@ -1073,6 +1140,100 @@ export class DocumentStore {
    */
   async shutdown(): Promise<void> {
     this.db.close();
+  }
+
+  /**
+   * Combined on-disk size of the database file plus WAL and SHM sidecars.
+   */
+  private getOnDiskSizeBytes(): number {
+    if (this.dbPath === ":memory:") {
+      return 0;
+    }
+
+    let total = 0;
+    for (const filePath of [this.dbPath, `${this.dbPath}-wal`, `${this.dbPath}-shm`]) {
+      try {
+        total += statSync(filePath).size;
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+          throw error;
+        }
+      }
+    }
+    return total;
+  }
+
+  /**
+   * Runs VACUUM with temp storage on disk so large stores do not duplicate the
+   * compacted database in process memory.
+   */
+  private vacuumWithFileTempStore(): void {
+    const prevTempStore = Number(this.db.pragma("temp_store", { simple: true }) ?? 0);
+    this.db.pragma("temp_store = FILE");
+    try {
+      this.db.exec("VACUUM");
+    } finally {
+      this.db.pragma(`temp_store = ${prevTempStore}`);
+    }
+  }
+
+  /**
+   * Reclaims unused SQLite pages and truncates the WAL file.
+   * In-memory databases are skipped.
+   *
+   * VACUUM takes an exclusive lock and blocks readers, so it runs only when
+   * `vacuum` is not `false` (the explicit compact path). After deletes, pass
+   * `{ vacuum: false }` to checkpoint with PASSIVE, which never waits on
+   * readers or writers.
+   *
+   * @param options.force Always VACUUM even if no free pages are detected
+   * @param options.vacuum When `false`, only run a non-blocking WAL checkpoint
+   * @returns Size before/after compaction and whether VACUUM ran
+   */
+  async compact(options?: { force?: boolean; vacuum?: boolean }): Promise<CompactResult> {
+    if (this.dbPath === ":memory:") {
+      return {
+        skipped: true,
+        vacuumed: false,
+        beforeBytes: 0,
+        afterBytes: 0,
+        reclaimedBytes: 0,
+      };
+    }
+
+    try {
+      const force = options?.force === true;
+      const allowVacuum = options?.vacuum !== false;
+      const beforeBytes = this.getOnDiskSizeBytes();
+
+      // PASSIVE never waits; TRUNCATE is reserved for the exclusive compact path.
+      this.db.pragma(
+        allowVacuum ? "wal_checkpoint(TRUNCATE)" : "wal_checkpoint(PASSIVE)",
+      );
+
+      const freelistCount = Number(
+        this.db.pragma("freelist_count", { simple: true }) ?? 0,
+      );
+      const shouldVacuum = allowVacuum && (force || freelistCount > 0);
+
+      if (shouldVacuum) {
+        this.vacuumWithFileTempStore();
+        this.db.pragma("journal_mode = WAL");
+        this.db.pragma("wal_autocheckpoint = 1000");
+        this.db.pragma("wal_checkpoint(TRUNCATE)");
+      }
+
+      const afterBytes = this.getOnDiskSizeBytes();
+      return {
+        skipped: false,
+        vacuumed: shouldVacuum,
+        beforeBytes,
+        afterBytes,
+        reclaimedBytes: Math.max(0, beforeBytes - afterBytes),
+      };
+    } catch (error) {
+      throw new ConnectionError("Failed to compact document store", error);
+    }
   }
 
   /**
@@ -1232,8 +1393,11 @@ export class DocumentStore {
    * Creates library and version records if they don't exist.
    */
   async resolveVersionId(library: string, version: string): Promise<number> {
-    const normalizedLibrary = library.toLowerCase();
-    const normalizedVersion = denormalizeVersionName(version.toLowerCase());
+    const normalizedLibrary = normalizeLibraryName(library);
+    // Last point every write passes through: apply the single version label
+    // contract here so an entry point that forgets to normalize cannot create a
+    // duplicate bucket (e.g. " 1.0.0 " alongside "1.0.0").
+    const normalizedVersion = denormalizeVersionName(normalizeVersionLabel(version));
 
     // Insert or get library_id
     this.statements.insertLibrary.run(normalizedLibrary);
@@ -1266,7 +1430,9 @@ export class DocumentStore {
    */
   async queryUniqueVersions(library: string): Promise<string[]> {
     try {
-      const rows = this.statements.queryVersions.all(library.toLowerCase()) as Array<{
+      const rows = this.statements.queryVersions.all(
+        normalizeLibraryName(library),
+      ) as Array<{
         name: string | null;
       }>;
       return rows.map((row) => normalizeVersionName(row.name));
@@ -1303,9 +1469,11 @@ export class DocumentStore {
     versionId: number,
     pages: number,
     maxPages: number,
+    /** Omit or pass null to leave the stored value untouched. */
+    pagesIndexed: number | null = null,
   ): Promise<void> {
     try {
-      this.statements.updateVersionProgress.run(pages, maxPages, versionId);
+      this.statements.updateVersionProgress.run(pages, maxPages, pagesIndexed, versionId);
     } catch (error) {
       throw new StoreError(`Failed to update version progress: ${error}`);
     }
@@ -1365,7 +1533,7 @@ export class DocumentStore {
    */
   async getLibrary(name: string): Promise<{ id: number; name: string } | null> {
     try {
-      const normalizedName = name.toLowerCase();
+      const normalizedName = normalizeLibraryName(name);
       const row = this.statements.getLibraryIdByName.get(normalizedName) as
         | { id: number }
         | undefined;
@@ -1470,9 +1638,9 @@ export class DocumentStore {
    */
   async checkDocumentExists(library: string, version: string): Promise<boolean> {
     try {
-      const normalizedVersion = version.toLowerCase();
+      const normalizedVersion = normalizeVersionLabel(version);
       const result = this.statements.checkExists.get(
-        library.toLowerCase(),
+        normalizeLibraryName(library),
         normalizedVersion,
       );
       return result !== undefined;
@@ -1484,38 +1652,10 @@ export class DocumentStore {
   /**
    * Retrieves a mapping of all libraries to their available versions with details.
    */
-  async queryLibraryVersions(): Promise<
-    Map<
-      string,
-      Array<{
-        version: string;
-        versionId: number;
-        status: VersionStatus; // Persisted enum value
-        progressPages: number;
-        progressMaxPages: number;
-        sourceUrl: string | null;
-        documentCount: number;
-        uniqueUrlCount: number;
-        indexedAt: string | null;
-      }>
-    >
-  > {
+  async queryLibraryVersions(): Promise<Map<string, Array<LibraryVersionSummary>>> {
     try {
       const rows = this.statements.queryLibraryVersions.all() as DbLibraryVersion[];
-      const libraryMap = new Map<
-        string,
-        Array<{
-          version: string;
-          versionId: number;
-          status: VersionStatus;
-          progressPages: number;
-          progressMaxPages: number;
-          sourceUrl: string | null;
-          documentCount: number;
-          uniqueUrlCount: number;
-          indexedAt: string | null;
-        }>
-      >();
+      const libraryMap = new Map<string, Array<LibraryVersionSummary>>();
 
       for (const row of rows) {
         // Process all rows, including those where version is "" (unversioned)
@@ -1532,8 +1672,10 @@ export class DocumentStore {
           versionId: row.versionId,
           // Preserve raw string status here; DocumentManagementService will cast to VersionStatus
           status: row.status,
+          errorMessage: row.errorMessage,
           progressPages: row.progressPages,
           progressMaxPages: row.progressMaxPages,
+          progressPagesIndexed: row.progressPagesIndexed ?? null,
           sourceUrl: row.sourceUrl,
           documentCount: row.documentCount,
           uniqueUrlCount: row.uniqueUrlCount,
@@ -1704,6 +1846,120 @@ export class DocumentStore {
   }
 
   /**
+   * Removes the row a refreshed page was read from, when it is not the row now
+   * being written.
+   *
+   * A refresh carries the id of the page it is re-fetching, and that page can
+   * move: a redirect renames it, and resolving a `.md` URL to the page it
+   * represents folds it onto another row. Either way the old row is stale. When
+   * the id names the row being written it is the same page, not a stale one, and
+   * deleting it would throw away the very content the write is competing with.
+   *
+   * Runs inside the caller's transaction so the decision and the write cannot be
+   * separated by another representation landing in between.
+   *
+   * @param previousPageId Page the refresh item was read from, if any.
+   * @param current The row presently stored under the URL being written.
+   */
+  private retirePreviousPage(
+    previousPageId: number | undefined,
+    current: PageIdRow | undefined,
+  ): void {
+    if (previousPageId === undefined || previousPageId === current?.id) return;
+    this.statements.deleteDocumentsByPageId.run(previousPageId);
+    const deleted = this.statements.deletePage.run(previousPageId);
+    if (deleted.changes > 0) {
+      logger.debug(`Retired page ${previousPageId}, superseded by another URL`);
+    }
+  }
+
+  /**
+   * Records a page that exists but holds no content.
+   *
+   * A successful fetch that yields no extractable text is a statement about the
+   * page, not an absence of information, so it replaces whatever was stored
+   * rather than leaving stale content behind. Callers withhold `etag` and
+   * `lastModified` when extraction failed, which keeps the next refresh
+   * unconditional instead of caching a failure against the server's validator.
+   *
+   * @param library Library name.
+   * @param version Version string.
+   * @param depth Crawl depth the page was found at.
+   * @param page Page identity and optional validators.
+   */
+  async addEmptyPage(
+    library: string,
+    version: string,
+    depth: number,
+    page: {
+      url: string;
+      contentUrl?: string;
+      title: string;
+      sourceContentType: string | null;
+      contentType: string | null;
+      etag: string | null;
+      lastModified: string | null;
+      isAdditionalRepresentation?: boolean;
+    },
+    previousPageId?: number,
+  ): Promise<void> {
+    try {
+      const versionId = await this.resolveVersionId(library, version);
+      this.db.transaction(() => {
+        const current = this.statements.getPageId.get(versionId, page.url) as
+          | PageIdRow
+          | undefined;
+
+        // An empty representation is still a representation, and it competes on
+        // the same terms: an HTML twin that extracted nothing must not erase the
+        // Markdown this crawl already stored under the same identity.
+        if (
+          losesToStoredRepresentation(
+            current,
+            page.sourceContentType,
+            page.isAdditionalRepresentation,
+          )
+        ) {
+          logger.debug(
+            `Keeping stored ${current?.source_content_type} representation of ${page.url}; ignoring empty ${page.sourceContentType} version`,
+          );
+          this.retirePreviousPage(previousPageId, current);
+          return;
+        }
+
+        this.retirePreviousPage(previousPageId, current);
+
+        this.statements.insertPage.run(
+          versionId,
+          page.url,
+          page.title || "",
+          page.etag,
+          page.lastModified,
+          page.sourceContentType,
+          page.contentType,
+          depth,
+          page.contentUrl ?? null,
+        );
+
+        // Clear any chunks the page had before it became empty. Without this the
+        // old content keeps matching searches while the row carries the new
+        // validator, so the next refresh answers 304 and it never self-corrects.
+        //
+        // `current` is reused when it exists: `insertPage` upserts, so the row
+        // keeps its id. Only a page that did not exist before needs looking up.
+        const stored =
+          current ??
+          (this.statements.getPageId.get(versionId, page.url) as PageIdRow | undefined);
+        if (stored) {
+          this.statements.deleteDocumentsByPageId.run(stored.id);
+        }
+      })();
+    } catch (error) {
+      throw new StoreError(`Failed to record empty page: ${error}`);
+    }
+  }
+
+  /**
    * Stores documents with library and version metadata, generating embeddings
    * for vector similarity search. Uses the new pages table to normalize page-level
    * metadata and avoid duplication across document chunks.
@@ -1713,10 +1969,42 @@ export class DocumentStore {
     version: string,
     depth: number,
     result: ScrapeResult,
+    previousPageId?: number,
   ): Promise<void> {
     try {
       const { title, url, chunks } = result;
       if (chunks.length === 0) {
+        return;
+      }
+
+      // Resolve library and version IDs (creates them if they don't exist)
+      const versionId = await this.resolveVersionId(library, version);
+      const existingPage = this.statements.getPageId.get(versionId, url) as
+        | PageIdRow
+        | undefined;
+
+      // Checked here as an optimisation only — a write that is going to be
+      // dropped should not first pay for a billed embedding round-trip. The
+      // authoritative check is repeated inside the write transaction below,
+      // because this snapshot is taken before the embedding await and a
+      // concurrent write for the same identity can land in between.
+      //
+      // Taken only when this write has no previous row to retire. Retiring has
+      // to happen inside that transaction, so returning early with one pending
+      // would strand it: the losing write is the only thing that knows the old
+      // spelling folded into this identity, and the row would stay searchable
+      // and lose again on every later refresh.
+      if (
+        previousPageId === undefined &&
+        losesToStoredRepresentation(
+          existingPage,
+          result.sourceContentType,
+          result.isAdditionalRepresentation,
+        )
+      ) {
+        logger.debug(
+          `Keeping stored ${existingPage?.source_content_type} representation of ${url}; ignoring ${result.sourceContentType} version`,
+        );
         return;
       }
 
@@ -1800,24 +2088,43 @@ export class DocumentStore {
         paddedEmbeddings = rawEmbeddings.map((vector) => this.padVector(vector));
       }
 
-      // Resolve library and version IDs (creates them if they don't exist)
-      const versionId = await this.resolveVersionId(library, version);
-
-      // Delete existing documents for this page to prevent conflicts
-      // First check if the page exists and get its ID
-      const existingPage = this.statements.getPageId.get(versionId, url) as
-        | { id: number }
-        | undefined;
-
-      if (existingPage) {
-        const result = this.statements.deleteDocumentsByPageId.run(existingPage.id);
-        if (result.changes > 0) {
-          logger.debug(`Deleted ${result.changes} existing documents for URL: ${url}`);
-        }
-      }
-
       // Insert documents in a transaction
-      const transaction = this.db.transaction(() => {
+      const transaction = this.db.transaction((): boolean => {
+        // Re-read inside the transaction. The snapshot above predates the
+        // embedding await, so when both representations of one identity are
+        // processed concurrently each can observe no row, and both would insert
+        // — leaving two chunk sets under one page. Reading and writing in the
+        // same synchronous transaction closes that window.
+        const current = this.statements.getPageId.get(versionId, url) as
+          | PageIdRow
+          | undefined;
+
+        if (
+          losesToStoredRepresentation(
+            current,
+            result.sourceContentType,
+            result.isAdditionalRepresentation,
+          )
+        ) {
+          logger.debug(
+            `Keeping stored ${current?.source_content_type} representation of ${url}; ignoring ${result.sourceContentType} version`,
+          );
+          // The row this write came from is still retired below: this crawl has
+          // decided that URL folds into `url`, so leaving it would keep a second
+          // copy of the page under its old spelling.
+          this.retirePreviousPage(previousPageId, current);
+          return false;
+        }
+
+        this.retirePreviousPage(previousPageId, current);
+
+        if (current) {
+          const deleted = this.statements.deleteDocumentsByPageId.run(current.id);
+          if (deleted.changes > 0) {
+            logger.debug(`Deleted ${deleted.changes} existing documents for URL: ${url}`);
+          }
+        }
+
         // Extract content type from metadata if available
         const sourceContentType = result.sourceContentType || result.contentType || null;
         const contentType = result.contentType || result.sourceContentType || null;
@@ -1838,16 +2145,19 @@ export class DocumentStore {
           sourceContentType,
           contentType,
           depth,
+          // NULL means "retrieved from its own URL"; the strategy reports this
+          // only when the two genuinely differ.
+          result.contentUrl ?? null,
         );
 
         // Query for the page ID since we can't use RETURNING
-        const existingPage = this.statements.getPageId.get(versionId, url) as
-          | { id: number }
+        const insertedPage = this.statements.getPageId.get(versionId, url) as
+          | PageIdRow
           | undefined;
-        if (!existingPage) {
+        if (!insertedPage) {
           throw new StoreError(`Failed to get page ID for URL: ${url}`);
         }
-        const pageId = existingPage.id;
+        const pageId = insertedPage.id;
 
         // Then insert document chunks linked to their pages
         let docIndex = 0;
@@ -1877,6 +2187,7 @@ export class DocumentStore {
 
           docIndex++;
         }
+        return true;
       });
 
       transaction();
@@ -1895,16 +2206,16 @@ export class DocumentStore {
    */
   async deletePages(library: string, version: string): Promise<number> {
     try {
-      const normalizedVersion = version.toLowerCase();
+      const normalizedVersion = normalizeVersionLabel(version);
 
       // First delete documents
       const result = this.statements.deleteDocuments.run(
-        library.toLowerCase(),
+        normalizeLibraryName(library),
         normalizedVersion,
       );
 
       // Then delete the pages (after documents are gone, due to foreign key constraints)
-      this.statements.deletePages.run(library.toLowerCase(), normalizedVersion);
+      this.statements.deletePages.run(normalizeLibraryName(library), normalizedVersion);
 
       return result.changes;
     } catch (error) {
@@ -2102,8 +2413,8 @@ export class DocumentStore {
     libraryDeleted: boolean;
   }> {
     try {
-      const normalizedLibrary = library.toLowerCase();
-      const normalizedVersion = version.toLowerCase();
+      const normalizedLibrary = normalizeLibraryName(library);
+      const normalizedVersion = normalizeVersionLabel(version);
 
       // First, get the version ID and library ID
       const versionResult = this.statements.getVersionId.get(
@@ -2219,12 +2530,12 @@ export class DocumentStore {
       }
 
       const ftsQuery = this.escapeFtsQuery(query);
-      const normalizedVersion = version.toLowerCase();
+      const normalizedVersion = normalizeVersionLabel(version);
 
       // Resolve library/version upfront so we can short-circuit missing versions
       // and constrain FTS queries by version_id.
       const versionRow = this.statements.getVersionId.get(
-        library.toLowerCase(),
+        normalizeLibraryName(library),
         normalizedVersion,
       ) as { id: number; library_id: number } | undefined;
 
@@ -2246,7 +2557,7 @@ export class DocumentStore {
         const vectorSearchK = overfetchLimit * this.vectorSearchMultiplier;
 
         const stmt = this.db.prepare(`
-          WITH vec_distances AS NOT MATERIALIZED (
+          WITH vec_distances AS MATERIALIZED (
             SELECT
               dv.rowid as id,
               dv.distance as vec_distance
@@ -2262,7 +2573,7 @@ export class DocumentStore {
               )
             ORDER BY dv.distance
           ),
-          fts_scores AS (
+          fts_scores AS MATERIALIZED (
             SELECT
               f.rowid as id,
               bm25(documents_fts, 10.0, 1.0, 5.0, 1.0) as fts_score
@@ -2277,6 +2588,20 @@ export class DocumentStore {
               )
             ORDER BY fts_score
             LIMIT ?
+          ),
+          candidates AS (
+            -- Union of vector and full-text candidate ids so the final query is
+            -- driven by the small match set instead of scanning the entire
+            -- documents table. Keeps search cost proportional to matches, not
+            -- total database size.
+            --
+            -- Both source CTEs are referenced twice (here and in the LEFT JOINs
+            -- below) and are pinned with MATERIALIZED so they are evaluated
+            -- exactly once. Leaving this to the query planner is what caused
+            -- the search regression in #454.
+            SELECT id FROM vec_distances
+            UNION
+            SELECT id FROM fts_scores
           )
           SELECT
             d.id,
@@ -2288,11 +2613,15 @@ export class DocumentStore {
             p.content_type as content_type,
             COALESCE(1 / (1 + v.vec_distance), 0) as vec_score,
             COALESCE(-MIN(f.fts_score, 0), 0) as fts_score
-          FROM documents d
+          FROM candidates c
+          JOIN documents d ON d.id = c.id
           JOIN pages p ON d.page_id = p.id
           LEFT JOIN vec_distances v ON d.id = v.id
           LEFT JOIN fts_scores f ON d.id = f.id
-          WHERE (v.id IS NOT NULL OR f.id IS NOT NULL)
+          WHERE NOT EXISTS (
+            SELECT 1 FROM json_each(json_extract(d.metadata, '$.types')) je
+            WHERE je.value = 'structural'
+          )
         `);
 
         const rawResults = stmt.all(
@@ -2397,10 +2726,10 @@ export class DocumentStore {
       }
 
       const parentPath = parent.metadata.path ?? [];
-      const normalizedVersion = version.toLowerCase();
+      const normalizedVersion = normalizeVersionLabel(version);
 
       const result = this.statements.getChildChunks.all(
-        library.toLowerCase(),
+        normalizeLibraryName(library),
         normalizedVersion,
         parent.url,
         parentPath.length + 1,
@@ -2430,10 +2759,10 @@ export class DocumentStore {
         return [];
       }
 
-      const normalizedVersion = version.toLowerCase();
+      const normalizedVersion = normalizeVersionLabel(version);
 
       const result = this.statements.getPrecedingSiblings.all(
-        library.toLowerCase(),
+        normalizeLibraryName(library),
         normalizedVersion,
         reference.url,
         BigInt(id),
@@ -2465,10 +2794,10 @@ export class DocumentStore {
         return [];
       }
 
-      const normalizedVersion = version.toLowerCase();
+      const normalizedVersion = normalizeVersionLabel(version);
 
       const result = this.statements.getSubsequentSiblings.all(
-        library.toLowerCase(),
+        normalizeLibraryName(library),
         normalizedVersion,
         reference.url,
         BigInt(id),
@@ -2508,9 +2837,9 @@ export class DocumentStore {
         return null;
       }
 
-      const normalizedVersion = version.toLowerCase();
+      const normalizedVersion = normalizeVersionLabel(version);
       const result = this.statements.getParentChunk.get(
-        library.toLowerCase(),
+        normalizeLibraryName(library),
         normalizedVersion,
         child.url,
         JSON.stringify(parentPath),
@@ -2539,11 +2868,11 @@ export class DocumentStore {
   ): Promise<DbPageChunk[]> {
     if (!ids.length) return [];
     try {
-      const normalizedVersion = version.toLowerCase();
+      const normalizedVersion = normalizeVersionLabel(version);
       // Use parameterized query for variable number of IDs
       const placeholders = ids.map(() => "?").join(",");
       const stmt = this.db.prepare(
-        `SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type FROM documents d
+        `SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type, p.content_url FROM documents d
          JOIN pages p ON d.page_id = p.id
          JOIN versions v ON p.version_id = v.id
          JOIN libraries l ON v.library_id = l.id
@@ -2553,7 +2882,7 @@ export class DocumentStore {
          ORDER BY d.sort_order`,
       );
       const rows = stmt.all(
-        library.toLowerCase(),
+        normalizeLibraryName(library),
         normalizedVersion,
         ...ids,
       ) as DbPageChunk[];
@@ -2573,9 +2902,9 @@ export class DocumentStore {
     url: string,
   ): Promise<DbPageChunk[]> {
     try {
-      const normalizedVersion = version.toLowerCase();
+      const normalizedVersion = normalizeVersionLabel(version);
       const stmt = this.db.prepare(
-        `SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type FROM documents d
+        `SELECT d.id, d.page_id, d.content, json(d.metadata) as metadata, d.sort_order, d.embedding, d.created_at, p.url, p.title, p.source_content_type, p.content_type, p.content_url FROM documents d
          JOIN pages p ON d.page_id = p.id
          JOIN versions v ON p.version_id = v.id
          JOIN libraries l ON v.library_id = l.id
@@ -2585,13 +2914,275 @@ export class DocumentStore {
          ORDER BY d.sort_order`,
       );
       const rows = stmt.all(
-        library.toLowerCase(),
+        normalizeLibraryName(library),
         normalizedVersion,
         url,
       ) as DbPageChunk[];
       return this.parseMetadataArray(rows);
     } catch (error) {
       throw new ConnectionError(`Failed to fetch documents by URL ${url}`, error);
+    }
+  }
+
+  /**
+   * Lists stored chunks for a library version with pagination and an optional
+   * case-insensitive content filter. Powers the admin dashboard's chunk explorer.
+   *
+   * Position (`chunkIndex`/`pageChunkCount`) is computed with window functions
+   * over `sort_order` rather than trusted verbatim, so results stay correct
+   * even if a page's chunks were ever stored with non-contiguous ordering.
+   * Token counts are never fabricated: the current schema has no per-chunk
+   * token column, so every item's `tokenCount` is `null`.
+   *
+   * @param library Library name (case-insensitive).
+   * @param version Version string (empty string for unversioned).
+   * @param options Pagination (`limit`/`offset`) and optional content `filter`.
+   * @returns The requested page of chunks plus the total count matching the filter.
+   */
+  async listVersionChunks(
+    library: string,
+    version: string,
+    options: ListVersionChunksOptions,
+  ): Promise<ListVersionChunksResult> {
+    try {
+      const normalizedVersion = normalizeVersionLabel(version);
+      const versionRow = this.statements.getVersionId.get(
+        normalizeLibraryName(library),
+        normalizedVersion,
+      ) as { id: number; library_id: number } | undefined;
+
+      if (!versionRow) {
+        return { chunks: [], total: 0 };
+      }
+
+      const offset = options.offset ?? 0;
+      const trimmedFilter = options.filter?.trim();
+
+      const whereParams: (string | number)[] = [versionRow.id];
+      let whereClause = "WHERE p.version_id = ?";
+      if (trimmedFilter) {
+        whereClause += " AND LOWER(d.content) LIKE LOWER(?) ESCAPE '\\'";
+        whereParams.push(`%${this.escapeLikePattern(trimmedFilter)}%`);
+      }
+
+      const countStmt = this.db.prepare(
+        `SELECT COUNT(*) as count
+         FROM documents d
+         JOIN pages p ON d.page_id = p.id
+         ${whereClause}`,
+      );
+      const countRow = countStmt.get(...whereParams) as { count: number };
+      const total = countRow.count;
+
+      const dataStmt = this.db.prepare(
+        `SELECT
+           d.id,
+           d.content,
+           (d.embedding IS NOT NULL) as has_embedding,
+           p.url as url,
+           p.content_type as mime_type,
+           ROW_NUMBER() OVER (PARTITION BY d.page_id ORDER BY d.sort_order, d.id) as chunk_index,
+           COUNT(*) OVER (PARTITION BY d.page_id) as page_chunk_count
+         FROM documents d
+         JOIN pages p ON d.page_id = p.id
+         ${whereClause}
+         ORDER BY p.url, d.sort_order, d.id
+         LIMIT ? OFFSET ?`,
+      );
+      const rows = dataStmt.all(...whereParams, options.limit, offset) as Array<{
+        id: number;
+        content: string;
+        has_embedding: number;
+        url: string;
+        mime_type: string | null;
+        chunk_index: number;
+        page_chunk_count: number;
+      }>;
+
+      const chunks: VersionChunkListItem[] = rows.map((row) => ({
+        id: String(row.id),
+        url: row.url,
+        content: row.content,
+        mimeType: row.mime_type,
+        chunkIndex: row.chunk_index,
+        pageChunkCount: row.page_chunk_count,
+        charCount: row.content.length,
+        tokenCount: null,
+        hasEmbedding: Boolean(row.has_embedding),
+      }));
+
+      return { chunks, total };
+    } catch (error) {
+      throw new ConnectionError("Failed to list version chunks", error);
+    }
+  }
+
+  /**
+   * Computes aggregate chunk/page/embedding statistics for a library version,
+   * for the chunk explorer's header strip.
+   *
+   * `avgTokensPerChunk` is always `null`: the schema does not persist
+   * per-chunk token counts, so this is reported as unavailable rather than
+   * fabricated from character counts.
+   *
+   * @param library Library name (case-insensitive).
+   * @param version Version string (empty string for unversioned).
+   * @returns Aggregate statistics, or all-zero/`null` values if the version doesn't exist.
+   */
+  async getVersionStats(library: string, version: string): Promise<VersionChunkStats> {
+    try {
+      const normalizedVersion = normalizeVersionLabel(version);
+      const versionRow = this.statements.getVersionId.get(
+        normalizeLibraryName(library),
+        normalizedVersion,
+      ) as { id: number; library_id: number } | undefined;
+
+      if (!versionRow) {
+        return {
+          pageCount: 0,
+          chunkCount: 0,
+          avgChunksPerPage: null,
+          avgTokensPerChunk: null,
+          embeddedChunkCount: 0,
+        };
+      }
+
+      const stmt = this.db.prepare(
+        `SELECT
+           COUNT(DISTINCT p.id) as page_count,
+           COUNT(d.id) as chunk_count,
+           SUM(CASE WHEN d.embedding IS NOT NULL THEN 1 ELSE 0 END) as embedded_chunk_count
+         FROM pages p
+         LEFT JOIN documents d ON d.page_id = p.id
+         WHERE p.version_id = ?`,
+      );
+      const row = stmt.get(versionRow.id) as {
+        page_count: number;
+        chunk_count: number;
+        embedded_chunk_count: number | null;
+      };
+
+      return {
+        pageCount: row.page_count,
+        chunkCount: row.chunk_count,
+        avgChunksPerPage: row.page_count > 0 ? row.chunk_count / row.page_count : null,
+        avgTokensPerChunk: null,
+        embeddedChunkCount: row.embedded_chunk_count ?? 0,
+      };
+    } catch (error) {
+      throw new ConnectionError("Failed to get version stats", error);
+    }
+  }
+
+  /**
+   * Returns per-day indexing activity over the trailing `days`-day window,
+   * derived from the `created_at` timestamps already stored on pages and
+   * chunks. Days with no activity are zero-filled so the returned series is
+   * contiguous.
+   *
+   * Rows are grouped by UTC calendar day to match SQLite's `date('now')`.
+   * `created_at` reflects first insertion, so a refresh that only updates
+   * existing pages does not inflate the counts (it is genuinely new content,
+   * not re-touched content, that registers as activity).
+   *
+   * @param days - Window length in days; clamped to 1..366.
+   */
+  async getActivityHistory(days: number): Promise<ActivityHistory> {
+    try {
+      const windowDays = Math.max(1, Math.min(366, Math.floor(days) || 1));
+      // A recursive calendar drives the zero-fill: every day in the window is
+      // emitted even when neither `pages` nor `documents` has a row for it.
+      const stmt = this.db.prepare(
+        `WITH RECURSIVE calendar(day) AS (
+           SELECT date('now', '-' || (@days - 1) || ' days')
+           UNION ALL
+           SELECT date(day, '+1 day') FROM calendar WHERE day < date('now')
+         )
+         SELECT
+           calendar.day AS date,
+           COALESCE(pg.cnt, 0) AS pages,
+           COALESCE(ch.cnt, 0) AS chunks
+         FROM calendar
+         LEFT JOIN (
+           SELECT date(created_at) AS d, COUNT(*) AS cnt
+           FROM pages
+           WHERE created_at >= date('now', '-' || (@days - 1) || ' days')
+           GROUP BY d
+         ) pg ON pg.d = calendar.day
+         LEFT JOIN (
+           SELECT date(created_at) AS d, COUNT(*) AS cnt
+           FROM documents
+           WHERE created_at >= date('now', '-' || (@days - 1) || ' days')
+           GROUP BY d
+         ) ch ON ch.d = calendar.day
+         ORDER BY calendar.day`,
+      );
+      const rows = stmt.all({ days: windowDays }) as Array<{
+        date: string;
+        pages: number;
+        chunks: number;
+      }>;
+
+      let totalPages = 0;
+      let totalChunks = 0;
+      for (const row of rows) {
+        totalPages += row.pages;
+        totalChunks += row.chunks;
+      }
+
+      return {
+        days: rows.map((row) => ({
+          date: row.date,
+          pages: row.pages,
+          chunks: row.chunks,
+        })),
+        since: rows[0]?.date ?? "",
+        until: rows[rows.length - 1]?.date ?? "",
+        totalPages,
+        totalChunks,
+      };
+    } catch (error) {
+      throw new ConnectionError("Failed to get activity history", error);
+    }
+  }
+
+  /**
+   * Returns a per-version content-type breakdown: pages grouped by MIME type
+   * (`content_type`, falling back to `source_content_type`, else `unknown`),
+   * most common first. Derived from the stored pages.
+   *
+   * @param library - Library name (case-insensitive).
+   * @param version - Version name (empty string for unversioned).
+   */
+  async getVersionComposition(
+    library: string,
+    version: string,
+  ): Promise<VersionComposition> {
+    try {
+      const versionRow = this.statements.getVersionId.get(
+        normalizeLibraryName(library),
+        normalizeVersionLabel(version),
+      ) as { id: number } | undefined;
+
+      if (!versionRow) return { mimeTypes: [] };
+
+      const mimeRows = this.db
+        .prepare(
+          `SELECT
+             COALESCE(NULLIF(p.content_type, ''), NULLIF(p.source_content_type, ''), 'unknown') AS label,
+             COUNT(*) AS pages
+           FROM pages p
+           WHERE p.version_id = ?
+           GROUP BY label
+           ORDER BY pages DESC, label`,
+        )
+        .all(versionRow.id) as Array<{ label: string; pages: number }>;
+
+      return {
+        mimeTypes: mimeRows.map((row) => ({ label: row.label, pages: row.pages })),
+      };
+    } catch (error) {
+      throw new ConnectionError("Failed to get version composition", error);
     }
   }
 }

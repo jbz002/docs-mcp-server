@@ -5,6 +5,7 @@
 import type { ScrapeResult, ScraperOptions } from "../../scraper/types";
 import type { EmbeddingModelConfig } from "../embeddings/EmbeddingConfig";
 import type {
+  CompactResult,
   DbVersionWithLibrary,
   FindVersionResult,
   LibrarySummary,
@@ -67,6 +68,14 @@ export interface IDocumentManagement {
   // Clear crawlOnly raw result cache for a version (二开新增). AIHelms clears
   // dangling cache after a task is declared failed (job lost, no salvage data).
   clearCrawlResults(library: string, version: string | null | undefined): Promise<void>;
+
+  /**
+   * Reclaims unused SQLite pages and truncates the WAL file.
+   * VACUUM takes an exclusive lock and may block searches until it finishes.
+   * @param options.force Always VACUUM even if no free pages are detected.
+   * @param options.vacuum When `false`, only run a non-blocking WAL checkpoint.
+   */
+  compact(options?: { force?: boolean; vacuum?: boolean }): Promise<CompactResult>;
 
   // Minimal set used indirectly by pipeline/UI where needed
   getVersionsByStatus(statuses: VersionStatus[]): Promise<DbVersionWithLibrary[]>;

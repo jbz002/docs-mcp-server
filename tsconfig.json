@@ -11,7 +11,7 @@
     "skipLibCheck": true,
     "outDir": "dist",
     "sourceMap": true,
-    "declaration": true,
+    "declaration": false,
     "allowJs": true,
     "resolveJsonModule": true,
     "types": ["vite/client"],

@@ -37,6 +37,7 @@
 - 仅需 `node_modules` 时用 `npm ci`（从 lockfile 安装，不修改 lockfile）。`npm install` 仅用于有意的依赖变更。
 - 保持 Node 22 — `better-sqlite3` 绑定 Node-ABI 原生二进制，不要将最低引擎版本提升到 v24+。
 - 偶尔使用的 CLI 工具（如 `promptfoo` 搜索评估），通过 `package.json` scripts 中的 `npx -y <pkg>@<version>` 调用，不声明为依赖。
+- npm 10 不在 `package-lock.json` 记录 `libc`，Linux 上 `npm ci` 会同时安装每个预编译原生包（`@xberg-io/xberg`、`@biomejs/cli`、`lightningcss` 等）的 glibc 和 musl 构建。`Dockerfile` 在 `npm ci` 后清理 musl 副本；若用 npm 11+ 重新生成 lockfile，`libc` 字段出现后该清理即冗余。
 
 ### 提交信息
 
@@ -117,17 +118,23 @@
 | `telemetry-e2e.test.ts` | `DOCS_MCP_TELEMETRY` 环境变量控制 PostHog 初始化 | 无（解析 debug 日志） | 是 |
 | `html-pipeline-basic-e2e.test.ts` | HTML 抓取管线（httpbin.org） | 网络 | 是 |
 | `html-pipeline-nonhtml-e2e.test.ts` | 非 HTML 内容绕过 Playwright | 无 | 是 |
-| `html-pipeline-live-e2e.test.ts` | 真实文档站点抓取（反爬、JS 重） | 网络；慢且不稳定 | **否** — `npm run test:live` |
+| `html-pipeline-live-e2e.test.ts` | 真实文档站点抓取（反爬、JS 重） | 网络；慢且不稳定 | **否** — `npm run test:live`（用 `vite.config.live.ts`） |
 | `refresh-pipeline-e2e.test.ts` | 刷新处理：200/304/404、断链、etag | 无（mock server） | 是 |
+| `scrape-progress-e2e.test.ts` | 进度计数语义：`pagesScraped`/`totalPages` 不变量、`maxPages` 约束已索引页数、计数持久化到 job 记录并经 `GetJobInfoTool` 读回 | 无（mock server） | 是 |
+| `unprocessable-content-e2e.test.ts` | 入队时和抓取时的不可处理内容门控：被过滤链接不发请求、skip 不落库、skip 不计入 `abortOnFailureRate` | 无（mock server） | 是 |
+| `empty-page-refresh-e2e.test.ts` | 刷新中的空页 vs 抽取失败：真空页存 etag、管线出错时扣住 etag、下次刷新重试 | 无（mock server） | 是 |
+| `markdown-identity-e2e.test.ts` | Markdown 变体页记录在规范 URL 下、`.md` 与 HTML 双形态站点只索引一次、`.md` URL 返回 HTML 时保持自身身份 | 无（mock server） | 是 |
+| `version-resolution-e2e.test.ts` | 版本标签归一化与解析（真实 SQLite）：各入口写入一致、tag/semver/prerelease 解析、列表顺序 | 无 | 是 |
 | `archive-integration.test.ts` | `LocalFileStrategy` 归档（zip）遍历和提取 | fixture 归档 | 是 |
-| `local-file-pdf-e2e.test.ts` | `file://` 目录下 PDF 与 .txt/.md 一起索引（#394 回归） | Kreuzberg 原生依赖 | 是 |
+| `local-file-pdf-e2e.test.ts` | `file://` 目录下 PDF 与 .txt/.md 一起索引（#394 回归） | Xberg 原生依赖 | 是 |
 | `vector-persistence-e2e.test.ts` | Embedding 写入 `documents_vec` 虚拟表 | MSW mock OpenAI | 是 |
 | `vector-search-e2e.test.ts` | 全流程：抓取 → 分割 → 嵌入 → 索引 → 搜索 | MSW mock OpenAI | 是 |
 | `github-private-repo-e2e.test.ts` | 私有 GitHub 仓库抓取认证流程 | `GITHUB_TOKEN`；否则跳过 | 是（无 token 则跳过） |
-| `docker-e2e.test.ts` | 生产镜像：非 root 用户、Chromium、Playwright 抓取、Kreuzberg PDF、bind-mount 文档夹递归索引 | Docker daemon；`DOCKER_IMAGE_TAG` 可复用已有镜像 | **否** — `npm run test:docker` |
+| `docker-e2e.test.ts` | 生产镜像：非 root 用户、Chromium、Playwright 抓取、Xberg PDF、bind-mount 文档夹递归索引 | Docker daemon；`DOCKER_IMAGE_TAG` 可复用已有镜像 | **否** — `npm run test:docker` |
 
 备注:
 - "live" 和 "docker" 套件需要外部网络或 Docker daemon，排除在 `npm test` / `npm run test:e2e` 之外。CI 在专用 `docker-test` job 中运行 `docker-e2e.test.ts`。
+- live 套件在 `vite.config.ts` 的 exclude 里排除，裸 `vitest`（含 watch 模式）不会打到真实站点。`--exclude` 只增不减且 `mergeConfig` 拼接，CLI 无法撤销——所以 `npm run test:live` 指向 `vite.config.live.ts`，后者替换 exclude 列表并去掉会拦截真实请求的 MSW mock server。
 - "优雅跳过"的套件启动时检查所需环境变量，缺失则短路退出，留在默认运行中是安全的。
 - 测试固件（PDF、docx、xlsx、归档等）放在 `test/fixtures/`，复用已有固件，不要临时生成。
 

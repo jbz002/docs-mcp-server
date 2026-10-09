@@ -250,6 +250,112 @@ describe("DocumentStore - With Embeddings", () => {
       expect(await store.checkDocumentExists("removelib", "1.0.0")).toBe(false);
     });
 
+    it("aggregates per-day indexing activity from page and chunk timestamps", async () => {
+      await store.addDocuments(
+        "activitylib",
+        "1.0.0",
+        1,
+        createScrapeResult("Page One", "https://example.com/one", "First activity page", [
+          "a",
+        ]),
+      );
+      await store.addDocuments(
+        "activitylib",
+        "1.0.0",
+        1,
+        createScrapeResult(
+          "Page Two",
+          "https://example.com/two",
+          "Second activity page",
+          ["b"],
+        ),
+      );
+
+      const history = await store.getActivityHistory(7);
+
+      // Contiguous, zero-filled window of the requested length.
+      expect(history.days).toHaveLength(7);
+      // Both pages (and their single chunk each) were just indexed.
+      expect(history.totalPages).toBe(2);
+      expect(history.totalChunks).toBe(2);
+      // Per-day counts sum to the totals and land on the most recent day (today).
+      const summedPages = history.days.reduce((sum, day) => sum + day.pages, 0);
+      const summedChunks = history.days.reduce((sum, day) => sum + day.chunks, 0);
+      expect(summedPages).toBe(2);
+      expect(summedChunks).toBe(2);
+      expect(history.days[history.days.length - 1]).toMatchObject({
+        pages: 2,
+        chunks: 2,
+      });
+      // Window bounds are present and correctly ordered.
+      expect(history.since <= history.until).toBe(true);
+    });
+
+    it("clamps the activity window and zero-fills empty stores", async () => {
+      const history = await store.getActivityHistory(0);
+      // A non-positive window is clamped to a single day, still zero-filled.
+      expect(history.days).toHaveLength(1);
+      expect(history.totalPages).toBe(0);
+      expect(history.totalChunks).toBe(0);
+      expect(history.days[0]).toMatchObject({ pages: 0, chunks: 0 });
+    });
+
+    it("computes a per-version content-type breakdown", async () => {
+      await store.addDocuments(
+        "complib",
+        "1.0.0",
+        1,
+        createScrapeResult(
+          "Comp One",
+          "https://example.com/comp-one",
+          "Composition page one content",
+          ["a"],
+        ),
+      );
+      await store.addDocuments(
+        "complib",
+        "1.0.0",
+        1,
+        createScrapeResult(
+          "Comp Two",
+          "https://example.com/comp-two",
+          "Composition page two content",
+          ["b"],
+        ),
+      );
+
+      const comp = await store.getVersionComposition("complib", "1.0.0");
+
+      // Both pages are HTML in this fixture, so they collapse into one bucket.
+      const mimePages = comp.mimeTypes.reduce((sum, m) => sum + m.pages, 0);
+      expect(mimePages).toBe(2);
+      expect(comp.mimeTypes[0]?.label).toContain("text/html");
+    });
+
+    it("returns an empty breakdown for an unknown version", async () => {
+      const comp = await store.getVersionComposition("nope", "9.9.9");
+      expect(comp.mimeTypes).toEqual([]);
+    });
+
+    it("surfaces a failed version's error message in the library listing", async () => {
+      await store.addDocuments(
+        "errlib",
+        "1.0.0",
+        1,
+        createScrapeResult("Err Page", "https://example.com/err", "content", ["a"]),
+      );
+      const versionId = await store.resolveVersionId("errlib", "1.0.0");
+      await store.updateVersionStatus(
+        versionId,
+        VersionStatus.FAILED,
+        "boom: could not fetch",
+      );
+
+      const versions = (await store.queryLibraryVersions()).get("errlib");
+      expect(versions?.[0]?.status).toBe(VersionStatus.FAILED);
+      expect(versions?.[0]?.errorMessage).toBe("boom: could not fetch");
+    });
+
     it("should remove version but keep library when other versions exist", async () => {
       // Add two versions
       await store.addDocuments(
@@ -1158,6 +1264,38 @@ describe("DocumentStore - Without Embeddings (FTS-only)", () => {
       }
     });
   });
+
+  describe("Chunk Explorer without embeddings", () => {
+    beforeEach(async () => {
+      store = new DocumentStore(":memory:", appConfig);
+      await store.initialize();
+
+      await store.addDocuments(
+        "testlib",
+        "1.0.0",
+        1,
+        createScrapeResult(
+          "React Hooks Guide",
+          "https://example.com/react-hooks",
+          "React hooks are a powerful feature for state management.",
+          ["React", "Hooks"],
+        ),
+      );
+    });
+
+    it("reports hasEmbedding false and embeddedChunkCount 0 when vector search is disabled", async () => {
+      const result = await store.listVersionChunks("testlib", "1.0.0", { limit: 10 });
+      expect(result.chunks.length).toBeGreaterThan(0);
+      for (const chunk of result.chunks) {
+        expect(chunk.hasEmbedding).toBe(false);
+        expect(chunk.tokenCount).toBeNull();
+      }
+
+      const stats = await store.getVersionStats("testlib", "1.0.0");
+      expect(stats.embeddedChunkCount).toBe(0);
+      expect(stats.avgTokensPerChunk).toBeNull();
+    });
+  });
 });
 
 /**
@@ -1212,6 +1350,108 @@ describe("DocumentStore - Common Functionality", () => {
       const v3 = await store.resolveVersionId("mixcase", "ALPHA");
       expect(v1).toBe(v2);
       expect(v2).toBe(v3);
+    });
+  });
+
+  describe("Version Label Lookup Parity", () => {
+    it("finds, counts and deletes a version by a padded or uppercased label", async () => {
+      // Writes normalized but reads did not, so a label that differed only by
+      // whitespace or case created the right row and then missed on every
+      // subsequent lookup, delete and search.
+      await store.addDocuments(
+        "paritylib",
+        "1.0.0",
+        1,
+        createScrapeResult("Doc", "https://example.com/p", "content", ["p"]),
+      );
+
+      for (const variant of ["1.0.0", " 1.0.0 ", "1.0.0 ", " 1.0.0"]) {
+        await expect(store.checkDocumentExists("paritylib", variant)).resolves.toBe(true);
+      }
+      await expect(store.checkDocumentExists(" PARITYLIB ", " 1.0.0 ")).resolves.toBe(
+        true,
+      );
+
+      // A tag differing only in case is the same bucket; "v1.0.0" is not,
+      // because labels are stored verbatim rather than coerced.
+      await store.addDocuments(
+        "paritylib",
+        "Stable",
+        1,
+        createScrapeResult("Tag", "https://example.com/t", "content", ["t"]),
+      );
+      await expect(store.checkDocumentExists("paritylib", " STABLE ")).resolves.toBe(
+        true,
+      );
+      await expect(store.checkDocumentExists("paritylib", "v1.0.0")).resolves.toBe(false);
+
+      // The delete path must reach the same row the lookup found.
+      await expect(store.deletePages("paritylib", " 1.0.0 ")).resolves.toBeGreaterThan(0);
+      await expect(store.checkDocumentExists("paritylib", "1.0.0")).resolves.toBe(false);
+    });
+
+    it("resolves a library by a padded name", async () => {
+      await store.resolveVersionId("padlib", "1.0.0");
+      await expect(store.getLibrary(" PADLIB ")).resolves.toMatchObject({
+        name: "padlib",
+      });
+    });
+  });
+
+  describe("Version Listing Order", () => {
+    it("orders each library's versions newest first, with tags last", async () => {
+      // queryLibraryVersions owns this ordering; SQL sorts lexicographically,
+      // so the JS comparator is what keeps 1.10.0 ahead of 1.9.0 and stops a
+      // tag sorting into the version run.
+      for (const version of ["1.9.0", "1.10.0", "stable", "2.0.0-beta", ""]) {
+        await store.resolveVersionId("orderlib", version);
+      }
+
+      const versions = (await store.queryLibraryVersions()).get("orderlib") ?? [];
+      expect(versions.map((v) => v.version)).toEqual([
+        "",
+        "2.0.0-beta",
+        "1.10.0",
+        "1.9.0",
+        "stable",
+      ]);
+      // Unversioned leads the listing; it is not the newest *version*.
+      expect(versions.filter((v) => v.version !== "")[0].version).toBe("2.0.0-beta");
+    });
+  });
+
+  describe("Version Label Normalization", () => {
+    it("collapses surrounding whitespace into a single version id", async () => {
+      const padded = await store.resolveVersionId("wslib", " 1.0.0 ");
+      const bare = await store.resolveVersionId("wslib", "1.0.0");
+      expect(padded).toBe(bare);
+    });
+
+    it("treats a whitespace-only label as unversioned", async () => {
+      const blank = await store.resolveVersionId("wslib2", "   ");
+      const empty = await store.resolveVersionId("wslib2", "");
+      expect(blank).toBe(empty);
+    });
+
+    it("keeps a partial version distinct from its full form", async () => {
+      // "1.20" is stored verbatim, never coerced to "1.20.0" — they are
+      // separate buckets that each remain addressable.
+      const partial = await store.resolveVersionId("partiallib", "1.20");
+      const full = await store.resolveVersionId("partiallib", "1.20.0");
+      expect(partial).not.toBe(full);
+    });
+
+    it("accepts a non-version label without rejecting it", async () => {
+      const tag = await store.resolveVersionId("taglib", "stable");
+      expect(typeof tag).toBe("number");
+      const versions = await store.queryUniqueVersions("taglib");
+      expect(versions).toContain("stable");
+    });
+
+    it("collapses surrounding whitespace on the library name too", async () => {
+      const padded = await store.resolveVersionId(" spacedlib ", "1.0.0");
+      const bare = await store.resolveVersionId("spacedlib", "1.0.0");
+      expect(padded).toBe(bare);
     });
   });
 
@@ -1700,6 +1940,192 @@ describe("DocumentStore - Common Functionality", () => {
         expect(page.depth).toBeDefined();
         // etag can be null, but the field should exist
         expect(page).toHaveProperty("etag");
+      }
+    });
+  });
+
+  describe("Chunk Explorer - listVersionChunks and getVersionStats", () => {
+    const library = "chunk-explorer-test";
+    const version = "1.0.0";
+    let originalApiKey: string | undefined;
+
+    beforeEach(async () => {
+      // The outer beforeEach creates a store without credentials available,
+      // so vector search stays disabled (see areCredentialsAvailable). Recreate
+      // the store with a credential present so these tests can assert on real
+      // embedding presence.
+      originalApiKey = process.env.OPENAI_API_KEY;
+      process.env.OPENAI_API_KEY = "test-key-for-chunk-explorer";
+      await store.shutdown();
+      store = new DocumentStore(":memory:", appConfig);
+      await store.initialize();
+
+      // Page 1 ("guide"): 3 chunks, inserted in order.
+      await store.addDocuments(library, version, 1, {
+        ...createScrapeResult(
+          "Guide",
+          "https://example.com/guide",
+          "Introduction to widgets",
+          ["intro"],
+        ),
+        chunks: [
+          {
+            types: ["text"],
+            content: "Introduction to widgets",
+            section: { level: 0, path: ["intro"] },
+          },
+          {
+            types: ["text"],
+            content: "Widgets are configurable",
+            section: { level: 0, path: ["config"] },
+          },
+          {
+            types: ["text"],
+            content: "Advanced widget usage",
+            section: { level: 0, path: ["advanced"] },
+          },
+        ],
+      });
+
+      // Page 2 ("reference"): a single chunk.
+      await store.addDocuments(
+        library,
+        version,
+        1,
+        createScrapeResult(
+          "Reference",
+          "https://example.com/reference",
+          "Reference material about gadgets",
+          ["reference"],
+        ),
+      );
+    });
+
+    it("paginates chunks and reports position/total within each page", async () => {
+      const firstPage = await store.listVersionChunks(library, version, {
+        limit: 2,
+        offset: 0,
+      });
+      expect(firstPage.total).toBe(4);
+      expect(firstPage.chunks).toHaveLength(2);
+
+      const secondPage = await store.listVersionChunks(library, version, {
+        limit: 2,
+        offset: 2,
+      });
+      expect(secondPage.total).toBe(4);
+      expect(secondPage.chunks).toHaveLength(2);
+
+      // The two pages must not overlap.
+      const firstIds = firstPage.chunks.map((c) => c.id);
+      const secondIds = secondPage.chunks.map((c) => c.id);
+      expect(firstIds.some((id) => secondIds.includes(id))).toBe(false);
+
+      const allChunks = [...firstPage.chunks, ...secondPage.chunks];
+
+      // Guide page: 3 chunks, positions 1..3, each reporting a page total of 3.
+      const guideChunks = allChunks.filter((c) => c.url === "https://example.com/guide");
+      expect(guideChunks).toHaveLength(3);
+      expect(guideChunks.map((c) => c.chunkIndex).sort((a, b) => a - b)).toEqual([
+        1, 2, 3,
+      ]);
+      for (const chunk of guideChunks) {
+        expect(chunk.pageChunkCount).toBe(3);
+      }
+
+      // Reference page: a single chunk, reported as "1 of 1".
+      const referenceChunks = allChunks.filter(
+        (c) => c.url === "https://example.com/reference",
+      );
+      expect(referenceChunks).toHaveLength(1);
+      expect(referenceChunks[0].chunkIndex).toBe(1);
+      expect(referenceChunks[0].pageChunkCount).toBe(1);
+    });
+
+    it("reports mimeType, charCount, hasEmbedding, and never fabricates tokenCount", async () => {
+      const result = await store.listVersionChunks(library, version, { limit: 10 });
+      expect(result.chunks).toHaveLength(4);
+
+      for (const chunk of result.chunks) {
+        expect(chunk.mimeType).toBe("text/html");
+        expect(chunk.charCount).toBe(chunk.content.length);
+        expect(chunk.charCount).toBeGreaterThan(0);
+        // The schema has no per-chunk token column: never fabricate a count.
+        expect(chunk.tokenCount).toBeNull();
+        // Embeddings are enabled in this describe block, so every chunk has one.
+        expect(chunk.hasEmbedding).toBe(true);
+      }
+    });
+
+    it("filters chunks by a case-insensitive content substring", async () => {
+      const result = await store.listVersionChunks(library, version, {
+        limit: 10,
+        filter: "WIDGET",
+      });
+
+      expect(result.total).toBe(3);
+      expect(result.chunks.every((c) => c.content.toLowerCase().includes("widget"))).toBe(
+        true,
+      );
+    });
+
+    it("treats LIKE wildcard characters in the filter as literal text", async () => {
+      await store.addDocuments(
+        library,
+        version,
+        1,
+        createScrapeResult(
+          "Promo",
+          "https://example.com/promo",
+          "Use code A100 for a discount",
+          ["promo"],
+        ),
+      );
+
+      // "1%0" must be matched literally. "A100" contains "1" followed
+      // eventually by "0", so an unescaped '%' wildcard would incorrectly
+      // match it even though the literal substring "1%0" isn't present.
+      const result = await store.listVersionChunks(library, version, {
+        limit: 10,
+        filter: "1%0",
+      });
+
+      expect(result.total).toBe(0);
+      expect(result.chunks).toEqual([]);
+    });
+
+    it("returns an empty result for a version that doesn't exist", async () => {
+      const result = await store.listVersionChunks(library, "9.9.9", { limit: 10 });
+      expect(result).toEqual({ chunks: [], total: 0 });
+    });
+
+    it("computes aggregate stats for the version", async () => {
+      const stats = await store.getVersionStats(library, version);
+
+      expect(stats.pageCount).toBe(2);
+      expect(stats.chunkCount).toBe(4);
+      expect(stats.avgChunksPerPage).toBe(2); // 4 chunks / 2 pages
+      expect(stats.avgTokensPerChunk).toBeNull();
+      expect(stats.embeddedChunkCount).toBe(4);
+    });
+
+    it("returns zeroed/null stats for a version that doesn't exist", async () => {
+      const stats = await store.getVersionStats(library, "9.9.9");
+
+      expect(stats).toEqual({
+        pageCount: 0,
+        chunkCount: 0,
+        avgChunksPerPage: null,
+        avgTokensPerChunk: null,
+        embeddedChunkCount: 0,
+      });
+    });
+
+    afterEach(() => {
+      if (originalApiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = originalApiKey;
       }
     });
   });
@@ -2271,5 +2697,408 @@ describe("DocumentStore - Embedding Model Change Safety", () => {
       expect(result?.rowid).toBe(Number(docId));
       expect(result?.distance).toBeCloseTo(0, 6);
     });
+  });
+});
+
+describe("DocumentStore - compaction", () => {
+  let store: DocumentStore | undefined;
+  let tempDir: string;
+  type TestDb = {
+    pragma(sql: string, options?: { simple?: boolean }): unknown;
+    exec(sql: string): unknown;
+  };
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "docs-mcp-compact-"));
+  });
+
+  afterEach(async () => {
+    if (store) {
+      await store.shutdown();
+      store = undefined;
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("skips compaction for in-memory databases", async () => {
+    const cfg = loadConfig();
+    cfg.app.embeddingModel = "";
+    store = new DocumentStore(":memory:", cfg);
+    await store.initialize();
+
+    const result = await store.compact({ force: true });
+    expect(result.skipped).toBe(true);
+    expect(result.vacuumed).toBe(false);
+    expect(result.reclaimedBytes).toBe(0);
+  });
+
+  it("reclaims disk space after deleting documents", async () => {
+    const cfg = loadConfig();
+    cfg.app.embeddingModel = "";
+    store = new DocumentStore(join(tempDir, "documents.db"), cfg);
+    await store.initialize();
+
+    const payload = "x".repeat(50_000);
+    for (let i = 0; i < 20; i++) {
+      await store.addDocuments(
+        "compactlib",
+        "1.0.0",
+        1,
+        createScrapeResult(`Page ${i}`, `https://example.com/page-${i}`, payload),
+      );
+    }
+
+    await store.deletePages("compactlib", "1.0.0");
+
+    const result = await store.compact({ force: false });
+    expect(result.skipped).toBe(false);
+    expect(result.vacuumed).toBe(true);
+    expect(result.afterBytes).toBeLessThan(result.beforeBytes);
+    expect(result.reclaimedBytes).toBeGreaterThan(0);
+
+    const second = await store.compact({ force: false });
+    expect(second.vacuumed).toBe(false);
+  });
+
+  it("does not vacuum when vacuum is false", async () => {
+    const cfg = loadConfig();
+    cfg.app.embeddingModel = "";
+    store = new DocumentStore(join(tempDir, "documents.db"), cfg);
+    await store.initialize();
+
+    const payload = "x".repeat(50_000);
+    for (let i = 0; i < 20; i++) {
+      await store.addDocuments(
+        "compactlib",
+        "1.0.0",
+        1,
+        createScrapeResult(`Page ${i}`, `https://example.com/page-${i}`, payload),
+      );
+    }
+
+    await store.deletePages("compactlib", "1.0.0");
+
+    const result = await store.compact({ force: false, vacuum: false });
+    expect(result.skipped).toBe(false);
+    expect(result.vacuumed).toBe(false);
+  });
+
+  it("uses file temp storage during vacuum and restores the previous setting", async () => {
+    const cfg = loadConfig();
+    cfg.app.embeddingModel = "";
+    store = new DocumentStore(join(tempDir, "documents.db"), cfg);
+    await store.initialize();
+
+    const db = (store as unknown as { db: TestDb }).db;
+    db.pragma("temp_store = MEMORY");
+
+    const originalExec = db.exec.bind(db);
+    let tempStoreDuringVacuum: number | undefined;
+    db.exec = (sql: string): unknown => {
+      if (sql === "VACUUM") {
+        tempStoreDuringVacuum = Number(db.pragma("temp_store", { simple: true }));
+      }
+      return originalExec(sql);
+    };
+
+    await store.compact({ force: true });
+
+    expect(tempStoreDuringVacuum).toBe(1);
+    expect(Number(db.pragma("temp_store", { simple: true }))).toBe(2);
+  });
+});
+
+/**
+ * A page can be reached both as a published Markdown file and as an HTML page —
+ * one document under two URLs that resolve to a single identity. Markdown is the
+ * representation the site's authors published; converting HTML ourselves is the
+ * fallback for sites that offer nothing better. Writes are otherwise
+ * last-one-wins, so without an explicit rule the winner would be decided by
+ * crawl order.
+ */
+describe("DocumentStore - Markdown representation precedence", () => {
+  let store: DocumentStore;
+  let originalEnv: NodeJS.ProcessEnv;
+
+  const resultWith = (sourceContentType: string, content: string): ScrapeResult => ({
+    url: "https://example.com/guide",
+    title: "Guide",
+    sourceContentType,
+    contentType: "text/markdown",
+    textContent: content,
+    links: [],
+    errors: [],
+    chunks: [{ types: ["text"], content, section: { level: 0, path: [] } }],
+  });
+
+  /**
+   * The second representation of a page reached during one crawl.
+   *
+   * Precedence decides between two routes to the same document, so it applies
+   * only to a write the crawl has flagged as competing with one it already
+   * made. A plain write is the new state of the page and always lands.
+   */
+  const competingWith = (sourceContentType: string, content: string): ScrapeResult => ({
+    ...resultWith(sourceContentType, content),
+    isAdditionalRepresentation: true,
+  });
+
+  const storedContent = async (): Promise<string[]> => {
+    const results = await store.findChunksByUrl(
+      "lib",
+      "1.0",
+      "https://example.com/guide",
+    );
+    return results.map((r) => r.content);
+  };
+
+  beforeEach(async () => {
+    originalEnv = { ...process.env };
+    delete process.env.OPENAI_API_KEY;
+    store = new DocumentStore(":memory:", appConfig);
+    await store.initialize();
+  });
+
+  afterEach(async () => {
+    process.env = originalEnv;
+    if (store) await store.shutdown();
+  });
+
+  it("keeps the markdown representation when html arrives afterwards", async () => {
+    await store.addDocuments(
+      "lib",
+      "1.0",
+      0,
+      resultWith("text/markdown", "from markdown"),
+    );
+    await store.addDocuments("lib", "1.0", 0, competingWith("text/html", "from html"));
+
+    expect(await storedContent()).toEqual(["from markdown"]);
+  });
+
+  it("replaces an html representation when markdown arrives afterwards", async () => {
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/html", "from html"));
+    await store.addDocuments(
+      "lib",
+      "1.0",
+      0,
+      competingWith("text/markdown", "from markdown"),
+    );
+
+    expect(await storedContent()).toEqual(["from markdown"]);
+  });
+
+  it("does not depend on which representation was stored first", async () => {
+    // The pair above, stated as the property they exist to hold.
+    const markdownFirst = new DocumentStore(":memory:", appConfig);
+    await markdownFirst.initialize();
+    await markdownFirst.addDocuments("lib", "1.0", 0, resultWith("text/markdown", "md"));
+    await markdownFirst.addDocuments("lib", "1.0", 0, competingWith("text/html", "html"));
+    const a = await markdownFirst.findChunksByUrl(
+      "lib",
+      "1.0",
+      "https://example.com/guide",
+    );
+    await markdownFirst.shutdown();
+
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/html", "html"));
+    await store.addDocuments("lib", "1.0", 0, competingWith("text/markdown", "md"));
+    const b = await store.findChunksByUrl("lib", "1.0", "https://example.com/guide");
+
+    expect(a.map((r) => r.content)).toEqual(b.map((r) => r.content));
+  });
+
+  it("decides on the recorded type, leaving the markdown judgement upstream", async () => {
+    // The store's rule is only markdown-vs-not. Whether a `.md` URL answered as
+    // `text/plain` counts as Markdown is settled before the write, by
+    // `WebScraperStrategy.asMarkdownRepresentation`, which restates it — so a
+    // `text/plain` arriving here is a genuine plain-text page and loses to
+    // stored Markdown like any other non-Markdown representation.
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/markdown", "md body"));
+    await store.addDocuments("lib", "1.0", 0, competingWith("text/plain", "txt body"));
+
+    expect(await storedContent()).toEqual(["md body"]);
+  });
+
+  it("lets a later crawl replace markdown with html", async () => {
+    // Precedence settles a race between two routes in one crawl. A write that
+    // is not competing is the page's new state, so a site that stopped
+    // publishing its markdown does not freeze on the last copy we hold.
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/markdown", "old md"));
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/html", "new html"));
+
+    expect(await storedContent()).toEqual(["new html"]);
+  });
+
+  it("retires the row a losing write came from", async () => {
+    // A refresh reaches one page by two spellings. The write that loses on
+    // precedence is the only thing that knows its old spelling folded into this
+    // identity, so it still has to retire that row — otherwise the old one stays
+    // searchable with stale content and loses again on every later refresh.
+    const legacy: ScrapeResult = {
+      ...resultWith("text/html", "stale html body"),
+      url: "https://example.com/guide/index.html",
+    };
+    await store.addDocuments("lib", "1.0", 0, legacy);
+    const pageByUrl = async (url: string) => {
+      const versionId = await store.resolveVersionId("lib", "1.0");
+      return (await store.getPagesByVersionId(versionId)).find((p) => p.url === url);
+    };
+    const legacyPage = await pageByUrl("https://example.com/guide/index.html");
+    expect(legacyPage).toBeDefined();
+
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/markdown", "fresh md"));
+    // The HTML spelling now resolves onto the same identity and loses.
+    await store.addDocuments(
+      "lib",
+      "1.0",
+      0,
+      competingWith("text/html", "stale html body"),
+      legacyPage?.id,
+    );
+
+    expect(await storedContent()).toEqual(["fresh md"]);
+    expect(await pageByUrl("https://example.com/guide/index.html")).toBeUndefined();
+  });
+
+  it("does not retire the previous row when there is nothing to store", async () => {
+    // A result with no chunks means the pipeline learned nothing. Retiring the
+    // page it came from would delete indexed content and put nothing back.
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/markdown", "kept"));
+    const versionId = await store.resolveVersionId("lib", "1.0");
+    const page = (await store.getPagesByVersionId(versionId)).find(
+      (p) => p.url === "https://example.com/guide",
+    );
+    await store.addDocuments(
+      "lib",
+      "1.0",
+      0,
+      { ...resultWith("text/html", ""), chunks: [] },
+      page?.id,
+    );
+
+    expect(await storedContent()).toEqual(["kept"]);
+  });
+
+  it("still replaces markdown with newer markdown", async () => {
+    // The rule is about representation, not about freezing the page.
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/markdown", "first"));
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/markdown", "second"));
+
+    expect(await storedContent()).toEqual(["second"]);
+  });
+
+  it("still replaces html with newer html", async () => {
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/html", "first"));
+    await store.addDocuments("lib", "1.0", 0, resultWith("text/html", "second"));
+
+    expect(await storedContent()).toEqual(["second"]);
+  });
+});
+
+describe("DocumentStore - concurrent writes to one identity", () => {
+  let store: DocumentStore;
+
+  const resultWith = (sourceContentType: string, content: string): ScrapeResult => ({
+    url: "https://example.com/guide",
+    title: "Guide",
+    sourceContentType,
+    contentType: "text/markdown",
+    textContent: content,
+    links: [],
+    errors: [],
+    chunks: [{ types: ["text"], content, section: { level: 0, path: [] } }],
+  });
+
+  /**
+   * The second representation of a page reached during one crawl.
+   *
+   * Precedence decides between two routes to the same document, so it applies
+   * only to a write the crawl has flagged as competing with one it already
+   * made. A plain write is the new state of the page and always lands.
+   */
+  const competingWith = (sourceContentType: string, content: string): ScrapeResult => ({
+    ...resultWith(sourceContentType, content),
+    isAdditionalRepresentation: true,
+  });
+
+  beforeEach(async () => {
+    // Vector search on, so embedding introduces a real await between reading
+    // the page row and writing it — which is the window the race lives in.
+    mockEmbeddingDimension.value = 1536;
+    appConfig.app.embeddingModel = EmbeddingConfig.parseEmbeddingConfig(
+      "openai:text-embedding-3-small",
+    ).modelSpec;
+    store = new DocumentStore(":memory:", appConfig);
+    await store.initialize();
+  });
+
+  afterEach(async () => {
+    if (store) await store.shutdown();
+  });
+
+  /**
+   * Holds every embedding call open until both writers have reached it, so the
+   * two are provably in flight together. `Promise.all` alone does not guarantee
+   * that: whichever chain needs fewer microtask turns can finish outright
+   * before the other reads the page row, and then there is no race to observe.
+   */
+  function blockEmbeddingsUntilBothArrive(count: number): void {
+    const s = store as unknown as {
+      embedDocumentsWithRetry: (...args: unknown[]) => Promise<unknown>;
+    };
+    const original = s.embedDocumentsWithRetry.bind(s);
+    let arrived = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    s.embedDocumentsWithRetry = async (...args: unknown[]) => {
+      arrived++;
+      if (arrived >= count) release();
+      await gate;
+      return original(...args);
+    };
+  }
+
+  it("stores one chunk set when both representations are written at once", async () => {
+    // Pins the observable property: two concurrent writes to one identity leave
+    // one chunk set, and it is the Markdown one.
+    //
+    // It does not discriminate the in-transaction re-read that guards the
+    // read-then-write window — reverting that still passes here, because
+    // better-sqlite3 transactions are synchronous and a writer that enters one
+    // completes before the other starts. The re-read is justified by reasoning
+    // rather than by this test.
+    blockEmbeddingsUntilBothArrive(2);
+
+    await Promise.all([
+      store.addDocuments("lib", "1.0", 0, resultWith("text/markdown", "from markdown")),
+      store.addDocuments("lib", "1.0", 0, competingWith("text/html", "from html")),
+    ]);
+
+    const chunks = await store.findChunksByUrl("lib", "1.0", "https://example.com/guide");
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].content).toBe("from markdown");
+  });
+
+  it("keeps markdown whichever write is scheduled first", async () => {
+    blockEmbeddingsUntilBothArrive(2);
+
+    // The crawl flags whichever representation it reached second, so here it is
+    // the Markdown one — and Markdown still wins, which is the property.
+    await Promise.all([
+      store.addDocuments("lib", "1.0", 0, resultWith("text/html", "from html")),
+      store.addDocuments(
+        "lib",
+        "1.0",
+        0,
+        competingWith("text/markdown", "from markdown"),
+      ),
+    ]);
+
+    const chunks = await store.findChunksByUrl("lib", "1.0", "https://example.com/guide");
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].content).toBe("from markdown");
   });
 });

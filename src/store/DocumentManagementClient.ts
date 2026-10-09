@@ -8,6 +8,7 @@ import { logger } from "../utils/logger";
 import type { EmbeddingModelConfig } from "./embeddings/EmbeddingConfig";
 import type { CrawlResultsPage, IDocumentManagement } from "./trpc/interfaces";
 import type {
+  CompactResult,
   DbVersionWithLibrary,
   FindVersionResult,
   LibrarySummary,
@@ -130,6 +131,18 @@ export class DocumentManagementClient implements IDocumentManagement {
       `${path}?url=${encodeURIComponent(url)}`,
     );
     return result.deleted;
+  }
+
+  async compact(options?: { force?: boolean; vacuum?: boolean }): Promise<CompactResult> {
+    const response = await fetch(`${this.baseUrl}/api/compact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(options ?? {}),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    }
+    return (await response.json()) as CompactResult;
   }
 
   async getVersionsByStatus(statuses: VersionStatus[]): Promise<DbVersionWithLibrary[]> {

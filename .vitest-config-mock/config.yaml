@@ -13,7 +13,6 @@ server:
     default: 6280
     worker: 8080
     mcp: 6280
-    web: 6281
   heartbeatMs: 30000
 auth:
   enabled: false
@@ -26,12 +25,14 @@ scraper:
   abortOnFailureRate: 0.5
   preserveHashes: false
   skipKnownTrackers: true
+  siteAdapters: true
   pageTimeoutMs: 5000
   browserTimeoutMs: 30000
   htmlExtractor: cheerio
   fetcher:
     maxRetries: 3
     baseDelayMs: 1000
+    timeoutMs: 30000
     maxCacheItems: 200
     maxCacheItemSizeBytes: 512000
   document:
@@ -63,6 +64,7 @@ embeddings:
   requestTimeoutMs: 30000
   initTimeoutMs: 30000
   vectorDimension: 1536
+  requestDimensions: false
 db:
   migrationMaxRetries: 5
   migrationRetryDelayMs: 300

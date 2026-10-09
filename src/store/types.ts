@@ -13,6 +13,14 @@ export interface DbPage {
   source_content_type: string | null;
   content_type: string | null;
   depth: number | null;
+  /**
+   * Where this page's content was retrieved from, when that differs from `url`.
+   *
+   * NULL means the two coincide, which is true of every page whose content came
+   * from its own address — and of every row written before representations were
+   * resolved to a shared identity. Readers coalesce to `url`.
+   */
+  content_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -54,6 +62,7 @@ export interface DbPageChunk extends DbChunk {
   title?: string | null;
   source_content_type?: string | null;
   content_type?: string | null;
+  content_url?: string | null;
 }
 
 /**
@@ -76,6 +85,16 @@ export type DbQueryResult<T> = T | undefined;
  */
 export interface StoreSearchResult {
   url: string;
+  /**
+   * Where the content was actually retrieved from, when that differs from
+   * `url`.
+   *
+   * `url` is the page's identity, which can be derived rather than observed: a
+   * page published as `/guide.md` is recorded as `/guide`, and a site need not
+   * serve anything at the latter. Callers showing a link to the source should
+   * prefer this when it is set, so the link goes somewhere that answers.
+   */
+  contentUrl?: string | null;
   content: string;
   score: number | null;
   mimeType?: string | null;
@@ -145,11 +164,40 @@ export interface VersionRef {
   version: string; // empty string for unversioned
 }
 
+/**
+ * Normalizes a version label for storage and lookup.
+ *
+ * This is the single write contract for version labels: trim surrounding
+ * whitespace, lowercase, and treat an empty result as unversioned. The label is
+ * otherwise stored verbatim — it is never validated, coerced or rejected, since
+ * a version label is not guaranteed to be a semantic version (`stable` and
+ * `1.20` are as legitimate as `1.20.0`).
+ *
+ * @param version Version label as supplied by a caller, if any.
+ * @returns The normalized label, or an empty string for unversioned content.
+ */
+export function normalizeVersionLabel(version?: string | null): string {
+  return (version ?? "").trim().toLowerCase();
+}
+
+/**
+ * Normalizes a library name for storage and lookup.
+ *
+ * The counterpart to {@link normalizeVersionLabel}: trim and lowercase, so a
+ * library is one row however its name was typed.
+ *
+ * @param library Library name as supplied by a caller.
+ * @returns The normalized name.
+ */
+export function normalizeLibraryName(library: string): string {
+  return library.trim().toLowerCase();
+}
+
 /** Normalize a VersionRef (lowercase, trim; empty string for unversioned). */
 export function normalizeVersionRef(ref: VersionRef): VersionRef {
   return {
-    library: ref.library.trim().toLowerCase(),
-    version: (ref.version ?? "").trim().toLowerCase(),
+    library: normalizeLibraryName(ref.library),
+    version: normalizeVersionLabel(ref.version),
   };
 }
 
@@ -161,6 +209,8 @@ export interface VersionSummary {
   id: number;
   ref: VersionRef;
   status: VersionStatus;
+  /** Error message recorded when the last indexing attempt failed, else null. */
+  errorMessage?: string | null;
   /**
    * Progress information while a version is being indexed.
    * Omitted once status is COMPLETED to reduce noise.
@@ -287,10 +337,167 @@ export interface DbLibraryVersion {
   version: string;
   versionId: number;
   status: VersionStatus;
+  errorMessage: string | null;
+  /** Items dequeued and given an outcome. */
   progressPages: number;
+  /** Items expected to be processed. NOT the configured `maxPages` value. */
   progressMaxPages: number;
+  /** Items that produced stored content. Null for rows predating this counter. */
+  progressPagesIndexed: number | null;
   sourceUrl: string | null;
   documentCount: number;
   uniqueUrlCount: number;
   indexedAt: string | null;
+}
+
+/**
+ * A version row as returned to callers, without the library name that groups it.
+ *
+ * Derived from {@link DbLibraryVersion} rather than restated, so the query's
+ * column list and the shape callers receive cannot drift apart.
+ */
+export type LibraryVersionSummary = Omit<DbLibraryVersion, "library">;
+
+/**
+ * A single stored chunk as returned by the admin dashboard's chunk explorer.
+ * Combines chunk content with its position within the parent page and basic
+ * size/embedding metadata, for debugging and insight into how data is stored.
+ */
+export interface VersionChunkListItem {
+  /** Stable identifier for the chunk (the underlying row id, as a string). */
+  id: string;
+  /** URL of the page this chunk belongs to. */
+  url: string;
+  /** Raw chunk content as stored. */
+  content: string;
+  /** Processed MIME type of the page (e.g. "text/html"), if known. */
+  mimeType: string | null;
+  /** 1-based position of this chunk within its page (e.g. 3 of 12). */
+  chunkIndex: number;
+  /** Total number of chunks stored for this chunk's page. */
+  pageChunkCount: number;
+  /** Character count of `content` (JS string length). */
+  charCount: number;
+  /**
+   * Token count for this chunk, if the store has ever recorded one.
+   * The current schema does not persist per-chunk token counts, so this is
+   * always `null` today. The field is kept so a future migration can populate
+   * it without changing the API shape; consumers must treat `null` as
+   * "unavailable", never as zero.
+   */
+  tokenCount: number | null;
+  /** Whether this chunk has a stored embedding vector. */
+  hasEmbedding: boolean;
+}
+
+/** Options for paginating and filtering {@link VersionChunkListItem} results. */
+export interface ListVersionChunksOptions {
+  /** Maximum number of chunks to return. */
+  limit: number;
+  /** Number of matching chunks to skip before returning results. Defaults to 0. */
+  offset?: number;
+  /** Case-insensitive substring filter applied to chunk content. */
+  filter?: string;
+}
+
+/** Paginated result of listing a version's stored chunks. */
+export interface ListVersionChunksResult {
+  /** The requested page of chunks. */
+  chunks: VersionChunkListItem[];
+  /** Total number of chunks matching the filter (ignoring pagination), for computing page counts. */
+  total: number;
+}
+
+/**
+ * Aggregate chunk/page/embedding statistics for a single library version,
+ * used by the chunk explorer's header strip.
+ */
+/** One calendar day of indexing activity, derived from row-creation timestamps (UTC). */
+export interface ActivityDay {
+  /** Calendar day in `YYYY-MM-DD` (UTC). */
+  date: string;
+  /** Pages first indexed on this day. */
+  pages: number;
+  /** Chunks first stored on this day. */
+  chunks: number;
+}
+
+/**
+ * Per-day indexing activity over a trailing window, derived from the
+ * `created_at` timestamps already stored on pages and chunks. Days with no
+ * activity are present with zero counts, so the series is contiguous and safe
+ * to chart directly.
+ */
+export interface ActivityHistory {
+  /** One entry per day in the window, oldest first, zero-filled. */
+  days: ActivityDay[];
+  /** Inclusive lower bound of the window (`YYYY-MM-DD`, UTC). */
+  since: string;
+  /** Inclusive upper bound of the window — "today" in UTC (`YYYY-MM-DD`). */
+  until: string;
+  /** Total pages indexed across the window. */
+  totalPages: number;
+  /** Total chunks indexed across the window. */
+  totalChunks: number;
+}
+
+export interface VersionChunkStats {
+  /** Number of distinct pages (unique URLs) indexed for this version. */
+  pageCount: number;
+  /** Total number of stored chunks for this version. */
+  chunkCount: number;
+  /** Average chunks per page, or `null` when the version has no pages. */
+  avgChunksPerPage: number | null;
+  /**
+   * Average token count per chunk, or `null` when token data isn't tracked.
+   * Always `null` today since the schema doesn't persist per-chunk token counts.
+   */
+  avgTokensPerChunk: number | null;
+  /** Number of chunks that have a stored embedding vector. */
+  embeddedChunkCount: number;
+}
+
+/**
+ * Serializable view of the active embedding model for the system-health
+ * snapshot. `provider` is widened to `string` because this may describe a
+ * remote worker's configuration fetched over the wire, and it is display-only.
+ */
+export interface EmbeddingConfigInfo {
+  provider: string;
+  model: string;
+  /** Vector dimension, or `null` when the model's size isn't known. */
+  dimensions: number | null;
+}
+
+/** One entry in a per-version page breakdown by MIME type. */
+export interface CompositionBucket {
+  /** MIME type (e.g. `text/html`), or `unknown` when the page has none recorded. */
+  label: string;
+  /** Number of pages of this type. */
+  pages: number;
+}
+
+/**
+ * Per-version content-type breakdown: pages grouped by MIME type, derived from
+ * the stored pages. Powers the library-detail "Content types" panel.
+ */
+export interface VersionComposition {
+  /** Pages grouped by MIME type, most common first. */
+  mimeTypes: CompositionBucket[];
+}
+
+/**
+ * Result of reclaiming unused SQLite pages and truncating the WAL.
+ */
+export interface CompactResult {
+  /** True when the store is in-memory and cannot reclaim disk space. */
+  skipped: boolean;
+  /** True when VACUUM ran. */
+  vacuumed: boolean;
+  /** Combined size of the database, WAL, and SHM files before compaction. */
+  beforeBytes: number;
+  /** Combined size of the database, WAL, and SHM files after compaction. */
+  afterBytes: number;
+  /** Bytes reclaimed (`beforeBytes - afterBytes`, floored at 0). */
+  reclaimedBytes: number;
 }

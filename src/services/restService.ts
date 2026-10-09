@@ -607,6 +607,21 @@ export async function registerRestService(
     });
   });
 
+  // ─── Store maintenance ─────────────────────────────────────────────
+
+  api.post("/api/compact", async (request: FastifyRequest, reply: FastifyReply) => {
+    await handleRoute(reply, async () => {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const parsed = z
+        .object({
+          force: z.boolean().optional(),
+          vacuum: z.boolean().optional(),
+        })
+        .parse(body);
+      return await docService.compact(parsed);
+    });
+  });
+
   // ─── Ingest (Store) ───────────────────────────────────────────────
 
   api.post("/api/ingest", async (request: FastifyRequest, reply: FastifyReply) => {

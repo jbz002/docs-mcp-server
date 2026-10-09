@@ -7,6 +7,7 @@ import { restoreJobDates } from "../events/dateUtils";
 import type { EventBusService } from "../events/EventBusService";
 import { EventType } from "../events/types";
 import type { ScraperOptions } from "../scraper/types";
+import { normalizeVersionLabel } from "../store/types";
 import { logger } from "../utils/logger";
 import type { IPipeline } from "./trpc/interfaces";
 import type { PipelineJob, PipelineJobStatus, PipelineManagerCallbacks } from "./types";
@@ -50,10 +51,7 @@ export class PipelineClient implements IPipeline {
     options: ScraperOptions,
   ): Promise<string> {
     try {
-      const normalizedVersion =
-        typeof version === "string" && version.trim().length === 0
-          ? null
-          : (version ?? null);
+      const normalizedVersion = normalizeVersionLabel(version) || null;
       const response = await fetch(`${this.baseUrl}/api/jobs/scrape`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -85,10 +83,7 @@ export class PipelineClient implements IPipeline {
     options?: { preserveHashes?: boolean },
   ): Promise<string> {
     try {
-      const normalizedVersion =
-        typeof version === "string" && version.trim().length === 0
-          ? null
-          : (version ?? null);
+      const normalizedVersion = normalizeVersionLabel(version) || null;
       const response = await fetch(`${this.baseUrl}/api/jobs/refresh`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
