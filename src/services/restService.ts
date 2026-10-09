@@ -309,9 +309,16 @@ export async function registerRestService(
         if (!library || !query) {
           throw new RestError("Missing required query parameters: library, query", 400);
         }
+        // Upstream 3.x resolves the version in the caller, not the store:
+        // findByContent matches the label literally, so an omitted version
+        // must go through findBestVersion before it reaches searchStore.
+        const versionResult = await docService.findBestVersion(
+          library,
+          version ?? undefined,
+        );
         const results = await docService.searchStore(
           library,
-          version ?? null,
+          versionResult.bestMatch,
           query,
           limit ? Number.parseInt(limit, 10) : 5,
         );
