@@ -46,8 +46,14 @@ FROM base AS production
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install Chromium from apt-get
-RUN apt-get update \
+# Install Chromium from apt-get. Point Debian at the Aliyun mirror first:
+# builds run on a China-network host where deb.debian.org crawls to a halt
+# and the Chromium dependency tree turns into a half-hour download.
+RUN sed -i -e 's|deb.debian.org|mirrors.aliyun.com|g' \
+      -e 's|security.debian.org|mirrors.aliyun.com|g' \
+      /etc/apt/sources.list.d/debian.sources 2>/dev/null \
+    || sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list \
+  && apt-get update \
   && apt-get install -y --no-install-recommends \
   chromium \
   && rm -rf /var/lib/apt/lists/*
