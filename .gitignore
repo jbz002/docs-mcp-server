@@ -19,3 +19,5 @@ public/index.html
 # DingTalk scrape verification samples
 docs/*.txt
 docs/*.err
+.cache/search-accuracy/
+tests/search-accuracy/results/

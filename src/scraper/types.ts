@@ -40,7 +40,6 @@ export enum ScrapeMode {
  * Strategy interface for implementing different scraping behaviors
  */
 export interface ScraperStrategy {
-  canHandle(url: string): boolean;
   scrape(
     options: ScraperOptions,
     progressCallback: ProgressCallback<ScraperProgressEvent>,
@@ -184,6 +183,37 @@ export interface ScraperOptions {
 }
 
 /**
+ * Options that only steer a single run, never stored or resubmitted. Includes
+ * this fork's resume hints: they are injected by the pipeline worker at run
+ * time and would otherwise leak into the stored scraper options.
+ */
+type RunOnlyScraperOption =
+  | "signal"
+  | "initialQueue"
+  | "isRefresh"
+  | "resumeFromUrls"
+  | "resumeFromQueue";
+
+/**
+ * Drops the options that only steer a single run (its cancellation signal and
+ * a refresh's queue and flag), leaving what reproduces the scrape: what the
+ * store keeps, and what a retry resubmits.
+ */
+export function withoutRunOnlyOptions<T extends Partial<ScraperOptions>>(
+  options: T,
+): Omit<T, RunOnlyScraperOption> {
+  const {
+    signal: _signal,
+    initialQueue: _initialQueue,
+    isRefresh: _isRefresh,
+    resumeFromUrls: _resumeFromUrls,
+    resumeFromQueue: _resumeFromQueue,
+    ...reproducible
+  } = options;
+  return reproducible;
+}
+
+/**
  * Result of scraping a single page.
  */
 export interface ScrapeResult {
@@ -311,6 +341,9 @@ export interface ScraperProgressEvent {
   };
   /** Database page ID (for refresh operations or tracking) */
   pageId?: number;
-  /** Indicates this page was deleted (404 during refresh or broken link) */
+  /**
+   * Indicates the stored page is to be deleted: a 404 during refresh or a
+   * broken link, or a container that an older version stored as a page.
+   */
   deleted?: boolean;
 }

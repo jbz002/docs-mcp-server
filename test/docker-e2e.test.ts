@@ -4,10 +4,14 @@
  * Exercises the actual production container end-to-end:
  *   1. Container starts and runs as a non-root user (security hardening).
  *   2. Chromium is installed where the runtime expects it (Playwright path).
- *   3. The Playwright-backed scrape pipeline can fetch a real web page.
+ *   3. The Playwright-backed scrape pipeline renders a page served from the
+ *      host, running its JavaScript, and a live documentation site whose
+ *      content only its scripts produce. It uses the image's Chromium and
+ *      never downloads Playwright's own.
  *   4. The Xberg-backed PDF pipeline can extract a PDF from a mounted volume.
  *   5. The web server serves the built admin UI (SPA shell, hashed assets,
  *      client-route fallback) and the tRPC API over HTTP.
+ *   6. No-argument startup serves HTTP, while transport and binding overrides work.
  *
  * Skipped automatically when Docker is not available on the host.
  *
@@ -17,9 +21,14 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import Database from "better-sqlite3";
 import { ZipArchive } from "archiver";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -95,6 +104,53 @@ async function createZipFixture(zipPath: string): Promise<void> {
   });
 }
 
+/** The text only the page's script writes, so finding it proves a browser ran the page. */
+const RENDERED_TEXT = "Text written by JavaScript";
+
+/**
+ * Serves a page whose only text is written by its script, on a port the
+ * container reaches as `host.docker.internal`.
+ *
+ * Docker Desktop forwards that name to the host's loopback. On Linux it is the
+ * bridge gateway, so the server listens on every interface there.
+ *
+ * @returns The page's port and a function that stops the server.
+ */
+async function startScriptedPage(): Promise<{ port: number; close: () => Promise<void> }> {
+  const words = JSON.stringify(RENDERED_TEXT.split(" "));
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(
+      `<html><head><title>Scripted page</title></head><body><main id="content"></main><script>document.getElementById("content").textContent = ${words}.join(" ");</script></body></html>`,
+    );
+  });
+  const host = process.platform === "linux" ? "0.0.0.0" : "127.0.0.1";
+  await new Promise<void>((resolve) => server.listen(0, host, resolve));
+  return {
+    port: (server.address() as AddressInfo).port,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+/** The stored text of `url`, its chunks joined in order. */
+function indexedContent(dbPath: string, url: string): string {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const rows = db
+      .prepare(
+        "SELECT d.content FROM documents d JOIN pages p ON d.page_id = p.id WHERE p.url = ? ORDER BY d.sort_order",
+      )
+      .all(url) as { content: string }[];
+    return rows.map((row) => row.content).join("\n");
+  } finally {
+    db.close();
+  }
+}
+
 function listIndexedUrls(dbPath: string): string[] {
   const db = new Database(dbPath, { readonly: true });
   try {
@@ -150,23 +206,29 @@ describe.skipIf(!DOCKER_AVAILABLE)("Docker image", () => {
     expect(r.stdout).toContain("OK");
   });
 
-  it("scrapes a live web page through the Playwright pipeline", async () => {
+  it("renders a page's JavaScript through the Playwright pipeline", async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "docs-mcp-docker-web-"));
     // Make sure the host-side dir is writable by uid 1000 (the container user).
     fs.chmodSync(dataDir, 0o777);
+    const page = await startScriptedPage();
+    const pageUrl = `http://host.docker.internal:${page.port}/`;
     try {
       const r = await docker(
         [
           "run",
           "--rm",
+          "--add-host=host.docker.internal:host-gateway",
           "-v",
           `${dataDir}:/data`,
           "-e",
           "DOCS_MCP_TELEMETRY=false",
+          // The host is a private address, which the scraper refuses by default.
+          "-e",
+          "DOCS_MCP_SCRAPER_SECURITY_NETWORK_ALLOW_PRIVATE_NETWORKS=true",
           IMAGE_TAG,
           "scrape",
           "docker-e2e-web",
-          "https://example.com/",
+          pageUrl,
           "--max-pages",
           "1",
           "--max-depth",
@@ -183,6 +245,80 @@ describe.skipIf(!DOCKER_AVAILABLE)("Docker image", () => {
       ).toMatch(/Successfully scraped\s+([1-9]\d*)\s+pages?/);
       const dbPath = path.join(dataDir, "documents.db");
       expect(fs.existsSync(dbPath), "documents.db should be written").toBe(true);
+      expect(indexedContent(dbPath, pageUrl)).toContain(RENDERED_TEXT);
+    } finally {
+      await page.close();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 240_000);
+
+  it("renders with the image's Chromium instead of downloading Playwright's", async () => {
+    const page = await startScriptedPage();
+    const pageUrl = `http://host.docker.internal:${page.port}/`;
+    try {
+      // fetch-url makes sure a browser is installed before it renders. A
+      // download would land in Playwright's cache in the user's home.
+      const r = await docker(
+        [
+          "run",
+          "--rm",
+          "--add-host=host.docker.internal:host-gateway",
+          "-e",
+          "DOCS_MCP_TELEMETRY=false",
+          "-e",
+          "DOCS_MCP_SCRAPER_SECURITY_NETWORK_ALLOW_PRIVATE_NETWORKS=true",
+          "--entrypoint",
+          "sh",
+          IMAGE_TAG,
+          "-c",
+          `node dist/index.js fetch-url ${pageUrl} --scrape-mode playwright && test ! -e "$HOME/.cache/ms-playwright"`,
+        ],
+        { timeout: 180_000 },
+      );
+      expect(r.status, `stdout=${r.stdout}\nstderr=${r.stderr}`).toBe(0);
+      expect(r.stdout).toContain(RENDERED_TEXT);
+    } finally {
+      await page.close();
+    }
+  }, 240_000);
+
+  it("renders a live JavaScript documentation site through the Playwright pipeline", async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "docs-mcp-docker-live-"));
+    fs.chmodSync(dataDir, 0o777);
+    // Docsify serves an empty `<div id="app">`. Its scripts, loaded from a CDN,
+    // fetch README.md and render it, so the tagline below reaches the store only
+    // when Chromium ran them; the shell's meta description lacks "site". A
+    // Chromium that starts but cannot load the scripts renders an empty app,
+    // which only the content check catches.
+    const siteUrl = "https://docsify.js.org/";
+    try {
+      const r = await docker(
+        [
+          "run",
+          "--rm",
+          "-v",
+          `${dataDir}:/data`,
+          "-e",
+          "DOCS_MCP_TELEMETRY=false",
+          IMAGE_TAG,
+          "scrape",
+          "docker-e2e-live",
+          siteUrl,
+          "--max-pages",
+          "1",
+          "--max-depth",
+          "0",
+          "--scrape-mode",
+          "playwright",
+        ],
+        { timeout: 180_000 },
+      );
+      const output = `stdout=${r.stdout}\nstderr=${r.stderr}`;
+      expect(r.status, output).toBe(0);
+      expect(
+        indexedContent(path.join(dataDir, "documents.db"), siteUrl),
+        output,
+      ).toContain("A magical documentation site generator");
     } finally {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
@@ -307,7 +443,15 @@ describe.skipIf(!DOCKER_AVAILABLE)("Docker image", () => {
     }
   }, 240_000);
 
-  it("serves the web UI over HTTP (SPA shell, hashed asset, deep-link fallback, and API)", async () => {
+  it.each([
+    { name: "no-argument startup", args: [], mcp: true },
+    { name: "startup with only --verbose", args: ["--verbose"], mcp: true },
+    {
+      name: "the explicit web subcommand",
+      args: ["web", "--host", "0.0.0.0", "--port", "6280"],
+      mcp: false,
+    },
+  ])("serves HTTP through $name", async ({ args, mcp }) => {
     // Run the web server detached and let Docker pick a free host port (-P), so
     // the test never clashes with a port already bound on the CI host. The
     // image sets DOCS_MCP_STORE_PATH=/data (writable), so no mount is needed —
@@ -315,16 +459,11 @@ describe.skipIf(!DOCKER_AVAILABLE)("Docker image", () => {
     const run = await docker([
       "run",
       "-d",
-      "--rm",
       "-P",
       "-e",
       "DOCS_MCP_TELEMETRY=false",
       IMAGE_TAG,
-      "web",
-      "--host",
-      "0.0.0.0",
-      "--port",
-      "6280",
+      ...args,
     ]);
     expect(run.status, `docker run failed: ${run.stderr}`).toBe(0);
     const containerId = run.stdout.trim();
@@ -344,7 +483,12 @@ describe.skipIf(!DOCKER_AVAILABLE)("Docker image", () => {
         if (status === 200) ready = true;
         else await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-      expect(ready, "web server did not become ready within 60s").toBe(true);
+      if (!ready) {
+        const logs = await docker(["logs", containerId]);
+        throw new Error(
+          `HTTP server did not become ready within 60s:\n${logs.stdout}\n${logs.stderr}`,
+        );
+      }
 
       // 1. The SPA shell is served at the root.
       const root = await fetch(`${base}/`);
@@ -370,12 +514,142 @@ describe.skipIf(!DOCKER_AVAILABLE)("Docker image", () => {
       expect(api.status).toBe(200);
       expect(api.headers.get("content-type")).toMatch(/application\/json/);
       const body = (await api.json()) as {
-        result?: { data?: { json?: { worker?: { mode?: string } } } };
+        result?: {
+          data?: {
+            json?: {
+              worker?: { mode?: string };
+              services?: {
+                web?: boolean;
+                api?: boolean;
+                mcp?: boolean;
+                worker?: boolean;
+              };
+            };
+          };
+        };
       };
       expect(body.result?.data?.json?.worker?.mode).toBe("embedded");
+      expect(body.result?.data?.json?.services).toEqual({
+        web: true,
+        api: true,
+        mcp,
+        worker: true,
+      });
+      if (mcp) {
+        const client = new Client({ name: "docker-http-test", version: "1.0.0" });
+        try {
+          await client.connect(new StreamableHTTPClientTransport(new URL("/mcp", base)));
+          const tools = await client.listTools();
+          expect(tools.tools.map((tool) => tool.name)).toContain("search_docs");
+        } finally {
+          await client.close();
+        }
+      }
     } finally {
-      // Best-effort stop (also triggers --rm cleanup); ignore if already gone.
-      await docker(["rm", "-f", containerId]);
+      await docker(["rm", "-f", "-v", containerId]);
     }
   }, 120_000);
+
+  it.each([
+    {
+      name: "generic runtime environment over the protocol alias",
+      envArgs: ["-e", "DOCS_MCP_SERVER_PROTOCOL=stdio"],
+      cliArgs: [],
+    },
+    {
+      name: "runtime protocol alias",
+      envArgs: ["-e", "DOCS_MCP_PROTOCOL=stdio"],
+      cliArgs: [],
+    },
+    {
+      name: "CLI arguments over an HTTP environment override",
+      envArgs: ["-e", "DOCS_MCP_SERVER_PROTOCOL=http"],
+      cliArgs: ["--protocol", "stdio"],
+    },
+  ])("serves MCP over stdio selected by $name", async ({ envArgs, cliArgs }) => {
+    const containerName = `docs-mcp-stdio-${randomUUID()}`;
+    const transport = new StdioClientTransport({
+      command: "docker",
+      args: [
+        "run",
+        "-i",
+        "--name",
+        containerName,
+        "-e",
+        "DOCS_MCP_TELEMETRY=false",
+        ...envArgs,
+        IMAGE_TAG,
+        ...cliArgs,
+      ],
+    });
+    const client = new Client({ name: "docker-stdio-test", version: "1.0.0" });
+    try {
+      await client.connect(transport);
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toContain("search_docs");
+    } finally {
+      try {
+        await client.close();
+      } finally {
+        try {
+          await transport.close();
+        } finally {
+          await docker(["rm", "-f", "-v", containerName]);
+        }
+      }
+    }
+  }, 60_000);
+
+  it.each([
+    {
+      name: "image defaults",
+      envArgs: [],
+      expected: { protocol: "http", host: "0.0.0.0", port: 6280 },
+    },
+    {
+      name: "generic runtime host override over aliases",
+      envArgs: [
+        "-e",
+        "DOCS_MCP_SERVER_HOST=127.0.0.1",
+        "-e",
+        "DOCS_MCP_HOST=0.0.0.0",
+        "-e",
+        "HOST=0.0.0.0",
+      ],
+      expected: { protocol: "http", host: "127.0.0.1", port: 6280 },
+    },
+    {
+      name: "runtime DOCS_MCP_HOST alias",
+      envArgs: ["-e", "DOCS_MCP_HOST=127.0.0.1"],
+      expected: { protocol: "http", host: "127.0.0.1", port: 6280 },
+    },
+    {
+      name: "runtime HOST alias",
+      envArgs: ["-e", "HOST=127.0.0.1"],
+      expected: { protocol: "http", host: "127.0.0.1", port: 6280 },
+    },
+    {
+      name: "runtime port override",
+      envArgs: ["-e", "DOCS_MCP_SERVER_PORTS_DEFAULT=6380"],
+      expected: { protocol: "http", host: "0.0.0.0", port: 6380 },
+    },
+  ])("resolves server configuration from $name", async ({ envArgs, expected }) => {
+    const r = await docker([
+      "run",
+      "--rm",
+      "-e",
+      "DOCS_MCP_TELEMETRY=false",
+      ...envArgs,
+      IMAGE_TAG,
+      "config",
+      "get",
+      "server",
+    ]);
+    expect(r.status, `config get failed: ${r.stderr}`).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      protocol: expected.protocol,
+      host: expected.host,
+      ports: { default: expected.port },
+    });
+  });
 });

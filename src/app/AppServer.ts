@@ -1,73 +1,159 @@
 /**
  * Central application server that can be configured to run different combinations of services.
  * This replaces the separate server implementations with a single, modular approach.
+ *
+ * This fork serves the REST API and the MCP endpoint; there is no web UI.
  */
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { IncomingHttpHeaders } from "node:http";
 import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
-import { ProxyAuthManager } from "../auth";
-import type { EventBusService } from "../events";
-import { RemoteEventProxy } from "../events/RemoteEventProxy";
-import type { IPipeline } from "../pipeline/trpc/interfaces";
-import { cleanupMcpService, registerMcpService } from "../services/mcpService";
+import { JwtAccessTokenVerifier } from "../auth/JwtAccessTokenVerifier";
+import {
+  buildProtectedResourceMetadata,
+  protectedResourceMetadataPaths,
+  protectedResourceMetadataUrl,
+} from "../auth/protectedResourceMetadata";
+import type { JobsBackend } from "../services/backend";
+import {
+  MCP_ENDPOINT_PATH,
+  type McpEndpointAuth,
+  registerMcpService,
+} from "../services/mcpService";
 import { registerRestService } from "../services/restService";
-import { registerWorkerService, stopWorkerService } from "../services/workerService";
-import type { IDocumentManagement } from "../store/trpc/interfaces";
 import { TelemetryEvent, telemetry } from "../telemetry";
 import { shouldEnableTelemetry } from "../telemetry/TelemetryConfig";
 import { printBanner } from "../utils/banner";
 import type { AppConfig } from "../utils/config";
 import { logger } from "../utils/logger";
-import { getCanonicalServerOrigin, isWildcardBindHost } from "../utils/serverOrigin";
+import {
+  describePublicLocationWarnings,
+  type PublicLocation,
+  resolvePublicLocation,
+} from "../utils/serverOrigin";
 import type { AppServerConfig } from "./AppServerConfig";
+import { isUnderPath, stripBasePath } from "./basePath";
+import {
+  createHostPolicy,
+  createOriginPolicy,
+  type HostPolicy,
+  isLoopbackBindHost,
+  type OriginPolicy,
+  setCorsPreflightHeaders,
+} from "./originPolicy";
+
+/** Distinct refused host names that get a warning; later ones are only refused. */
+const MAX_REFUSED_HOST_WARNINGS = 20;
 
 /**
  * Central application server that provides modular service composition.
  */
 export class AppServer {
   private server: FastifyInstance;
-  private mcpServer: McpServer | null = null;
-  private authManager: ProxyAuthManager | null = null;
+  /** Authentication for the MCP endpoint; set only when auth is enabled and MCP is served. */
+  private mcpAuth: McpEndpointAuth | undefined;
+  private readonly originPolicy: OriginPolicy;
+  private readonly hostPolicy: HostPolicy;
+  private readonly refusedHosts = new Set<string>();
+  /**
+   * On a loopback bind no reverse proxy stands in front of the API, so it is
+   * shielded from foreign web pages the same way as the MCP endpoint.
+   */
+  private readonly shieldsApi: boolean;
   private serverConfig: AppServerConfig;
   private readonly appConfig: AppConfig;
-  private remoteEventProxy: RemoteEventProxy | null = null;
+  private readonly backend: JobsBackend;
+  /** Where clients reach this server; every advertised URL derives from it. */
+  private readonly location: PublicLocation;
+  /** Public URL of the MCP endpoint: the resource identifier and default token audience. */
+  private readonly mcpEndpointUrl: string;
 
-  constructor(
-    private docService: IDocumentManagement,
-    private pipeline: IPipeline,
-    private eventBus: EventBusService,
-    serverConfig: AppServerConfig,
-    appConfig: AppConfig,
-  ) {
+  /**
+   * @param backend The services to serve. Whoever opened them closes them;
+   *   the server neither starts nor stops the pipeline.
+   * @param serverConfig Which services to run and the port to bind.
+   * @param appConfig The application configuration.
+   */
+  constructor(backend: JobsBackend, serverConfig: AppServerConfig, appConfig: AppConfig) {
+    this.backend = backend;
     this.serverConfig = serverConfig;
     this.appConfig = appConfig;
+    this.location = resolvePublicLocation(appConfig, serverConfig.port);
+    for (const warning of describePublicLocationWarnings(appConfig)) {
+      logger.warn(`⚠️  ${warning}`);
+    }
+    this.mcpEndpointUrl = `${this.location.url}${MCP_ENDPOINT_PATH}`;
+    const browserPolicy = {
+      publicOrigin: this.location.configured ? this.location.origin : undefined,
+      allowedOrigins: appConfig.server.allowedOrigins,
+    };
+    this.originPolicy = createOriginPolicy(browserPolicy);
+    this.hostPolicy = createHostPolicy(browserPolicy);
+    this.shieldsApi = isLoopbackBindHost(appConfig.server.host);
+    const basePath = this.location.basePath;
     this.server = Fastify({
       logger: false, // Use our own logger
+      // One set of root-mounted routes serves proxies that forward the base
+      // path and proxies that strip it.
+      rewriteUrl: (request) => stripBasePath(request.url ?? "/", basePath),
     });
   }
 
   /**
    * Validate the server configuration for invalid service combinations.
    */
-  private validateConfig(): void {
-    // MCP server needs pipeline access (worker or external)
-    if (this.serverConfig.enableMcpServer) {
-      if (!this.serverConfig.enableWorker && !this.serverConfig.externalWorkerUrl) {
-        throw new Error(
-          "MCP server requires either embedded worker (enableWorker: true) or external worker (externalWorkerUrl)",
-        );
-      }
+  /** Whether jobs run in this process rather than on a remote worker. */
+  private get runsJobs(): boolean {
+    return this.backend.workerUrl === undefined;
+  }
+
+  /**
+   * Whether a request's `Host` header may be served, warning once per refused
+   * name so an operator reaching the server under an unknown name sees why.
+   */
+  private acceptsHost(host: string | undefined): boolean {
+    if (this.hostPolicy.isAllowed(host)) {
+      return true;
     }
+    const name = JSON.stringify(String(host).slice(0, 100));
+    if (
+      !this.refusedHosts.has(name) &&
+      this.refusedHosts.size < MAX_REFUSED_HOST_WARNINGS
+    ) {
+      this.refusedHosts.add(name);
+      logger.warn(
+        `⚠️  Refused a request for host ${name}. If clients reach the server under this name, set server.publicUrl to it or add its origin to server.allowedOrigins.`,
+      );
+    }
+    return false;
+  }
+
+  /**
+   * Why a request is refused before routing, if it is: an unknown host name
+   * (DNS rebinding), or a foreign origin calling the API on a loopback bind.
+   * @param headers - The request headers.
+   * @param reachesApi - Whether the request targets the REST API or the MCP endpoint.
+   * @returns The refusal message, or `undefined` when the request may proceed.
+   */
+  private refusal(headers: IncomingHttpHeaders, reachesApi: boolean): string | undefined {
+    if (!this.acceptsHost(headers.host)) {
+      return "Forbidden: host not allowed.";
+    }
+    if (
+      reachesApi &&
+      this.shieldsApi &&
+      this.originPolicy.check(headers.origin) === "denied"
+    ) {
+      return "Forbidden: origin not allowed.";
+    }
+    return undefined;
   }
 
   /**
    * Start the application server with the configured services.
    */
   async start(): Promise<FastifyInstance> {
-    this.validateConfig();
-
     // Get embedding configuration from the document service (source of truth)
-    const embeddingConfig = this.docService.getActiveEmbeddingConfig();
+    const embeddingConfig = this.backend.docService.getActiveEmbeddingConfig();
 
     // Initialize telemetry if enabled
     if (this.appConfig.app.telemetryEnabled && shouldEnableTelemetry()) {
@@ -93,7 +179,7 @@ export class AppServer {
           telemetry.track(TelemetryEvent.APP_STARTED, {
             services: this.getActiveServicesList(),
             port: this.serverConfig.port,
-            externalWorker: Boolean(this.serverConfig.externalWorkerUrl),
+            externalWorker: Boolean(this.backend.workerUrl),
             // Include startup context when available
             ...(this.serverConfig.startupContext?.cliCommand && {
               cliCommand: this.serverConfig.startupContext.cliCommand,
@@ -119,13 +205,7 @@ export class AppServer {
         host: this.appConfig.server.host,
       });
 
-      // Connect to remote worker after server is fully started
-      if (this.remoteEventProxy) {
-        // Don't await - let it connect in the background
-        this.remoteEventProxy.connect();
-      }
-
-      this.logStartupInfo(this.getCanonicalOrigin());
+      this.logStartupInfo(this.location.url);
       return this.server;
     } catch (error) {
       logger.error(`❌ Failed to start AppServer: ${error}`);
@@ -139,21 +219,6 @@ export class AppServer {
    */
   async stop(): Promise<void> {
     try {
-      // Disconnect remote event proxy if connected
-      if (this.remoteEventProxy) {
-        this.remoteEventProxy.disconnect();
-      }
-
-      // Stop worker service if enabled
-      if (this.serverConfig.enableWorker) {
-        await stopWorkerService(this.pipeline);
-      }
-
-      // Cleanup MCP service if enabled
-      if (this.mcpServer) {
-        await cleanupMcpService(this.mcpServer);
-      }
-
       // Track app shutdown
       if (telemetry.isEnabled()) {
         telemetry.track(TelemetryEvent.APP_SHUTDOWN, {
@@ -212,7 +277,7 @@ export class AppServer {
     if (!process.listenerCount("uncaughtException")) {
       // Catch uncaught exceptions
       process.on("uncaughtException", (error) => {
-        logger.error(`Uncaught Exception: ${error.message}`);
+        logger.error(`Unhandled Exception: ${error.message}`);
         if (telemetry.isEnabled()) {
           telemetry.captureException(error, {
             error_category: "system",
@@ -258,7 +323,7 @@ export class AppServer {
     const services: string[] = [];
     if (this.serverConfig.enableMcpServer) services.push("mcp");
     if (this.serverConfig.enableApiServer) services.push("api");
-    if (this.serverConfig.enableWorker) services.push("worker");
+    if (this.runsJobs) services.push("worker");
     return services;
   }
 
@@ -269,33 +334,25 @@ export class AppServer {
     // Setup global error handling for telemetry
     this.setupErrorHandling();
 
-    // Setup remote event proxy if using an external worker
-    this.setupRemoteEventProxy();
+    // Refuse host names that could belong to an attacker's page (a DNS-rebound
+    // page sends same-origin GET requests without an Origin header, so origin
+    // checks alone cannot recognize it), and shield the API on a loopback bind.
+    this.server.addHook("onRequest", async (request, reply) => {
+      const pathname = request.url.split("?")[0];
+      const reachesApi =
+        isUnderPath(pathname, "/api") ||
+        isUnderPath(pathname, MCP_ENDPOINT_PATH) ||
+        isUnderPath(pathname, "/sse") ||
+        isUnderPath(pathname, "/messages");
+      const refusal = this.refusal(request.headers, reachesApi);
+      if (refusal) {
+        return reply.code(403).send({ error: refusal });
+      }
+    });
 
-    // Initialize authentication if enabled
-    if (this.appConfig.auth.enabled) {
-      await this.initializeAuth();
-    }
-
-    // Add request logging middleware for OAuth debugging
-    if (this.appConfig.auth.enabled) {
-      this.server.addHook("onRequest", async (request) => {
-        if (
-          request.url.includes("/oauth") ||
-          request.url.includes("/auth") ||
-          request.url.includes("/register")
-        ) {
-          logger.debug(
-            `${request.method} ${request.url} - Headers: ${JSON.stringify(request.headers)}`,
-          );
-        }
-      });
-    }
-
-    // Add protected resource metadata endpoint for RFC9728 compliance
-    if (this.appConfig.auth.enabled && this.authManager) {
-      await this.setupAuthMetadataEndpoint();
-    }
+    // Authentication covers the MCP endpoint only; set it up before the
+    // endpoint registers so every request goes through the same checks.
+    await this.setupAuthentication();
 
     // Conditionally enable services based on configuration
     if (this.serverConfig.enableMcpServer) {
@@ -305,38 +362,21 @@ export class AppServer {
     if (this.serverConfig.enableApiServer) {
       await this.enableRestApi();
     }
-
-    if (this.serverConfig.enableWorker) {
-      await this.enableWorker();
-    }
-  }
-
-  /**
-   * Initialize remote event proxy if using an external worker.
-   * The proxy is created here but connection is deferred until after server starts.
-   */
-  private setupRemoteEventProxy(): void {
-    // If using an external worker, create remote event proxy (connection happens later)
-    if (this.serverConfig.externalWorkerUrl) {
-      this.remoteEventProxy = new RemoteEventProxy(
-        this.serverConfig.externalWorkerUrl,
-        this.eventBus,
-      );
-      logger.debug(
-        "Remote event proxy created for external worker (connection deferred)",
-      );
-    }
   }
 
   /**
    * Enable MCP server service.
    */
   private async enableMcpServer(): Promise<void> {
-    this.mcpServer = await registerMcpService(
+    await registerMcpService(
       this.server,
-      this.docService,
-      this.appConfig,
-      this.authManager || undefined,
+      {
+        docService: this.backend.docService,
+        config: this.appConfig,
+        originPolicy: this.originPolicy,
+        location: this.location,
+      },
+      this.mcpAuth,
     );
     logger.debug("MCP server service enabled");
   }
@@ -347,72 +387,86 @@ export class AppServer {
   private async enableRestApi(): Promise<void> {
     await registerRestService(
       this.server,
-      this.pipeline,
-      this.docService,
-      this.eventBus,
+      this.backend.pipeline,
+      this.backend.docService,
+      this.backend.eventBus,
       this.appConfig,
     );
     logger.debug("REST API server enabled");
   }
 
   /**
-   * Enable worker service.
+   * Set up authentication for the MCP endpoint: this server is an OAuth 2.0
+   * resource server that verifies tokens the configured issuer issued for it,
+   * and publishes protected resource metadata so clients can find that issuer.
+   *
+   * @throws Error when authentication is enabled for the MCP endpoint without
+   *   an issuer or a public URL, or when the issuer can't be discovered.
    */
-  private async enableWorker(): Promise<void> {
-    await registerWorkerService(this.pipeline);
-    logger.debug("Worker service enabled");
-  }
-
-  /**
-   * Initialize OAuth2/OIDC authentication manager.
-   */
-  private async initializeAuth(): Promise<void> {
+  private async setupAuthentication(): Promise<void> {
     if (!this.appConfig.auth.enabled) {
       return;
     }
-
-    if (!this.appConfig.auth.issuerUrl || !this.appConfig.auth.audience) {
-      throw new Error(
-        "Authentication is enabled but auth.issuerUrl or auth.audience is not configured.",
+    if (!this.serverConfig.enableMcpServer) {
+      logger.warn(
+        "⚠️  Authentication is enabled, but this process serves no MCP endpoint, so it protects nothing here. The REST API is never protected by authentication.",
       );
-    }
-
-    this.authManager = new ProxyAuthManager({
-      enabled: true,
-      issuerUrl: this.appConfig.auth.issuerUrl,
-      audience: this.appConfig.auth.audience,
-      scopes: ["openid", "profile"],
-    });
-    await this.authManager.initialize();
-    logger.debug("Proxy auth manager initialized");
-  }
-
-  /**
-   * Setup OAuth2 endpoints using ProxyAuthManager.
-   */
-  private async setupAuthMetadataEndpoint(): Promise<void> {
-    if (!this.authManager) {
       return;
     }
 
-    // ProxyAuthManager handles all OAuth2 endpoints automatically
-    const baseUrl = new URL(this.getCanonicalOrigin());
-    this.authManager.registerRoutes(this.server, baseUrl);
-
-    if (
-      !this.appConfig.server.publicOrigin &&
-      isWildcardBindHost(this.appConfig.server.host)
-    ) {
-      logger.warn(
-        "⚠️  Authentication is enabled with a wildcard bind host and no public origin. Configure server.publicOrigin or --public-origin for remote OAuth clients.",
+    const issuerUrl = this.appConfig.auth.issuerUrl?.trim();
+    if (!issuerUrl) {
+      throw new Error(
+        "Authentication is enabled but auth.issuerUrl is not set. Set it to your identity provider's issuer URL.",
+      );
+    }
+    if (!this.location.configured) {
+      throw new Error(
+        "Authentication is enabled but no public URL is configured. Set server.publicUrl (or --public-url) to the URL clients use to reach this server.",
       );
     }
 
-    logger.debug("OAuth2 proxy endpoints registered");
-  }
+    const verifier = await JwtAccessTokenVerifier.create({
+      issuerUrl,
+      audience: this.appConfig.auth.audience?.trim() || this.mcpEndpointUrl,
+    });
 
-  private getCanonicalOrigin(): string {
-    return getCanonicalServerOrigin(this.appConfig, this.serverConfig.port);
+    const document = buildProtectedResourceMetadata({
+      mcpEndpointUrl: this.mcpEndpointUrl,
+      issuerUrl,
+      server: this.appConfig.server,
+    });
+    for (const metadataPath of protectedResourceMetadataPaths(
+      this.location.basePath,
+      MCP_ENDPOINT_PATH,
+    )) {
+      this.server.route({
+        method: ["GET", "HEAD"],
+        url: metadataPath,
+        handler: async (_request, reply) =>
+          reply
+            .header("Access-Control-Allow-Origin", "*")
+            .type("application/json")
+            .send(document),
+      });
+      this.server.options(metadataPath, async (request, reply) => {
+        setCorsPreflightHeaders(reply.raw, {
+          origin: "*",
+          methods: "GET",
+          requestedHeaders: request.headers["access-control-request-headers"],
+        });
+        return reply.code(204).send();
+      });
+    }
+
+    this.mcpAuth = {
+      verifier,
+      resourceMetadataUrl: protectedResourceMetadataUrl(
+        this.location.url,
+        MCP_ENDPOINT_PATH,
+      ),
+    };
+    logger.debug(`Protected resource metadata served for ${this.mcpEndpointUrl}`);
   }
 
   /**
@@ -425,10 +479,8 @@ export class AppServer {
     }
 
     // Determine the service mode
-    const isWorkerOnly =
-      this.serverConfig.enableWorker && !this.serverConfig.enableMcpServer;
-    const isMcpOnly =
-      this.serverConfig.enableMcpServer && !this.serverConfig.enableWorker;
+    const isWorkerOnly = this.runsJobs && !this.serverConfig.enableMcpServer;
+    const isMcpOnly = this.serverConfig.enableMcpServer && !this.runsJobs;
 
     // Determine the main service name
     if (isWorkerOnly) {
@@ -446,14 +498,21 @@ export class AppServer {
       enabledServices.push(`MCP endpoints: ${address}/mcp, ${address}/sse`);
     }
 
-    // Worker: only show external worker URL (internal is implied)
-    if (!this.serverConfig.enableWorker && this.serverConfig.externalWorkerUrl) {
-      enabledServices.push(`Worker: ${this.serverConfig.externalWorkerUrl}`);
+    // Authentication boundary: say exactly what is and isn't protected
+    if (this.mcpAuth) {
+      enabledServices.push(
+        `Authentication: protects ${this.mcpEndpointUrl} only; the REST API is not protected`,
+      );
     }
 
-    // Embeddings: only show if worker is enabled
-    if (this.serverConfig.enableWorker) {
-      const embeddingConfig = this.docService.getActiveEmbeddingConfig();
+    // Worker: only show external worker URL (internal is implied)
+    if (this.backend.workerUrl) {
+      enabledServices.push(`Worker: ${this.backend.workerUrl}`);
+    }
+
+    // Embeddings: only show when jobs run in this process
+    if (this.runsJobs) {
+      const embeddingConfig = this.backend.docService.getActiveEmbeddingConfig();
       if (embeddingConfig) {
         enabledServices.push(
           `Embeddings: ${embeddingConfig.provider}:${embeddingConfig.model}`,

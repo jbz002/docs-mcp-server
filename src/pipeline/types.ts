@@ -21,6 +21,16 @@ export enum PipelineJobStatus {
 }
 
 /**
+ * What a pipeline does when it starts with versions that an earlier run left
+ * RUNNING or QUEUED:
+ * - `recover`: runs them again as refresh jobs.
+ * - `fail`: marks them FAILED, so users can retry them.
+ * - `leave`: changes nothing, for a command that runs only its own job while
+ *   the process that hosts the store handles the rest.
+ */
+export type InterruptedJobs = "recover" | "fail" | "leave";
+
+/**
  * Public interface for pipeline jobs exposed through API boundaries.
  * Contains only serializable fields suitable for JSON transport.
  */
@@ -74,9 +84,11 @@ export interface PipelineJob {
  * always have complete runtime configuration available.
  */
 export interface InternalPipelineJob
-  extends Omit<PipelineJob, "version" | "error" | "scraperOptions"> {
+  extends Omit<PipelineJob, "version" | "error" | "scraperOptions" | "versionId"> {
   /** The library version associated with the job (internal uses string). */
   version: string;
+  /** Database version ID, claimed when the job is enqueued. */
+  versionId: number;
   /** Error object if the job failed. */
   error: Error | null;
   /** Complete scraper options with runtime configuration. */

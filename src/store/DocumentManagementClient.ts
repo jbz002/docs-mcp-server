@@ -195,7 +195,7 @@ export class DocumentManagementClient implements IDocumentManagement {
   async addScrapeResult(
     library: string,
     version: string | null | undefined,
-    depth: number,
+    _depth: number,
     result: ScrapeResult,
   ): Promise<void> {
     await this.ingestDocuments(library, version, [result]);

@@ -124,11 +124,21 @@
 | `unprocessable-content-e2e.test.ts` | 入队时和抓取时的不可处理内容门控：被过滤链接不发请求、skip 不落库、skip 不计入 `abortOnFailureRate` | 无（mock server） | 是 |
 | `empty-page-refresh-e2e.test.ts` | 刷新中的空页 vs 抽取失败：真空页存 etag、管线出错时扣住 etag、下次刷新重试 | 无（mock server） | 是 |
 | `markdown-identity-e2e.test.ts` | Markdown 变体页记录在规范 URL 下、`.md` 与 HTML 双形态站点只索引一次、`.md` URL 返回 HTML 时保持自身身份 | 无（mock server） | 是 |
-| `version-resolution-e2e.test.ts` | 版本标签归一化与解析（真实 SQLite）：各入口写入一致、tag/semver/prerelease 解析、列表顺序 | 无 | 是 |
-| `archive-integration.test.ts` | `LocalFileStrategy` 归档（zip）遍历和提取 | fixture 归档 | 是 |
+| `archive-e2e.test.ts` | `LocalFileStrategy` 归档（zip）遍历和提取 | fixture 归档 | 是 |
 | `local-file-pdf-e2e.test.ts` | `file://` 目录下 PDF 与 .txt/.md 一起索引（#394 回归） | Xberg 原生依赖 | 是 |
 | `vector-persistence-e2e.test.ts` | Embedding 写入 `documents_vec` 虚拟表 | MSW mock OpenAI | 是 |
 | `vector-search-e2e.test.ts` | 全流程：抓取 → 分割 → 嵌入 → 索引 → 搜索 | MSW mock OpenAI | 是 |
+| `browser-fetcher-e2e.test.ts` | 浏览器 fetcher：JS 渲染站点抓取 | Playwright | 是 |
+| `browser-restart-e2e.test.ts` | 浏览器崩溃重启后继续抓取 | Playwright | 是 |
+| `shared-browser-e2e.test.ts` | 多任务共享 ManagedBrowser | Playwright | 是 |
+| `inline-script-e2e.test.ts` | 内联 script 阻塞渲染的处理 | 无（mock server） | 是 |
+| `fetch-url-tool-e2e.test.ts` | `fetch_url` 工具端到端 | 网络 | 是 |
+| `github-scrape-e2e.test.ts` | GitHub blob/wiki/tree URL 策略（单文件、容器页、标题） | 无（mock server） | 是 |
+| `library-identity-e2e.test.ts` | 各入口写入的 library 唯一性与大小写归一 | 无（mock server） | 是 |
+| `local-file-refresh-e2e.test.ts` | `file://` 版本刷新（etag/304 语义） | Xberg 原生依赖 | 是 |
+| `embedding-outage-e2e.test.ts` | embedding 失败时 job 失败语义 | MSW mock OpenAI | 是 |
+| `playwright-embedded-content-e2e.test.ts` | Playwright 抓取内嵌内容 | Playwright | 是 |
+| `github-scrape-live-e2e.test.ts` | 真实 GitHub 抓取 | 网络 | **否** — `npm run test:live` |
 | `github-private-repo-e2e.test.ts` | 私有 GitHub 仓库抓取认证流程 | `GITHUB_TOKEN`；否则跳过 | 是（无 token 则跳过） |
 | `docker-e2e.test.ts` | 生产镜像：非 root 用户、Chromium、Playwright 抓取、Xberg PDF、bind-mount 文档夹递归索引 | Docker daemon；`DOCKER_IMAGE_TAG` 可复用已有镜像 | **否** — `npm run test:docker` |
 

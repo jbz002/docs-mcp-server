@@ -1,5 +1,5 @@
 import type { PipelineJob } from "../pipeline/types";
-import type { ScrapeResult, ScraperProgressEvent } from "../scraper/types";
+import type { ScrapeResult } from "../scraper/types";
 import type { EventPayloads } from "./types";
 import { EventType } from "./types";
 
@@ -33,8 +33,7 @@ function restoreJobFields(job: PipelineJob): void {
   for (const field of DATE_FIELDS) {
     const value = job[field];
     if (value !== undefined && value !== null && typeof value === "string") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (job as any)[field] = new Date(value);
+      (job as Record<(typeof DATE_FIELDS)[number], unknown>)[field] = new Date(value);
     }
   }
 }

@@ -198,6 +198,24 @@ export class PipelineClient implements IPipeline {
     }
   }
 
+  async removeVersion(
+    library: string,
+    version: string | undefined | null,
+  ): Promise<void> {
+    const versionPath =
+      version === undefined || version === null || version === ""
+        ? "latest"
+        : encodeURIComponent(version);
+    const response = await fetch(
+      `${this.baseUrl}/api/libraries/${encodeURIComponent(library)}/versions/${versionPath}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
+    }
+  }
+
   async clearCompletedJobs(): Promise<number> {
     try {
       const response = await fetch(`${this.baseUrl}/api/jobs/clear-completed`, {

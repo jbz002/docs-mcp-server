@@ -337,10 +337,9 @@ export async function registerRestService(
     ) => {
       await handleRoute(reply, async () => {
         const { library, version } = request.params;
-        await docService.removeVersion(
-          library,
-          version === "latest" ? undefined : version,
-        );
+        // Route through the pipeline so a job scraping this version is
+        // cancelled before the version disappears under it.
+        await pipeline.removeVersion(library, version === "latest" ? undefined : version);
         return { ok: true };
       });
     },

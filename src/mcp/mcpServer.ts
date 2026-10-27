@@ -1,65 +1,144 @@
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod/v3";
+import fs from "node:fs";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
+import { z } from "zod";
+import { libraryNamesMatch } from "../store/types";
 import { TelemetryEvent, telemetry } from "../telemetry";
+import type { AppConfig } from "../utils/config";
 import type { McpServerTools } from "./tools";
 import { createError, createResponse } from "./utils";
+
+/**
+ * Built-in instructions advertised to MCP clients when none are configured.
+ * They position this server against internal-company KB search tools so models
+ * route "library API docs" questions here and internal-document questions
+ * elsewhere. Unlike upstream, this fork only registers search/retrieval tools,
+ * so the text never mentions indexing tools.
+ */
+const DEFAULT_INSTRUCTIONS =
+  "API and technical documentation retrieval: how to call APIs, endpoints, parameters, SDK " +
+  "usage, code examples, and version resolution — covers open-source libraries/frameworks " +
+  "and internal company systems alike. Use this server for developer-facing technical " +
+  "questions. Non-technical company knowledge (policies, processes, manuals, project " +
+  "material) belongs to the internal KB search tools instead.";
+
+/**
+ * Resolves the instructions text advertised to MCP clients during initialization.
+ * `server.instructions` and `server.instructionsFile` are mutually exclusive. When
+ * neither is set, the built-in instructions of this fork are used.
+ * @param config The application configuration.
+ * @returns The configured instructions text, or the built-in instructions.
+ * @throws {Error} If both settings are set, or the configured instructions file cannot be read.
+ */
+export function resolveServerInstructions(config: AppConfig): string {
+  const { instructions, instructionsFile: filePath } = config.server;
+  if (instructions !== undefined && filePath !== undefined) {
+    throw new Error(
+      "Both server.instructions and server.instructionsFile are set; configure only one of them.",
+    );
+  }
+  if (instructions !== undefined) {
+    return instructions;
+  }
+  if (filePath !== undefined) {
+    try {
+      return fs.readFileSync(filePath, "utf-8");
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Failed to read MCP server instructions file "${filePath}": ${reason}`,
+      );
+    }
+  }
+  return DEFAULT_INSTRUCTIONS;
+}
+
+/**
+ * Decodes a URI template variable once. The SDK hands variables over still
+ * percent-encoded; a malformed escape is kept verbatim rather than failing.
+ */
+function decodeUriVariable(value: string | string[]): string {
+  const raw = Array.isArray(value) ? value.join("/") : value;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Creates a factory for MCP server instances. The instructions are resolved once
+ * so every connection created from the factory advertises the same text.
+ * @param tools The shared tool instances to use for server operations.
+ * @param config The application configuration.
+ * @returns A factory that builds configured McpServer instances.
+ */
+export function createMcpServerFactory(
+  tools: McpServerTools,
+  config: AppConfig,
+): () => McpServer {
+  const instructions = resolveServerInstructions(config);
+  return () => createMcpServerInstance(tools, config, instructions);
+}
 
 /**
  * Creates and configures an instance of the MCP server with registered tools and resources.
  * Only search/retrieval tools are included; crawler and job management operations
  * are exposed via the REST API at /api instead.
  * @param tools The shared tool instances to use for server operations.
+ * @param config The application configuration.
+ * @param instructions Instructions text sent to clients during initialization, as
+ *   returned by `resolveServerInstructions()`.
  * @returns A configured McpServer instance.
  */
-export function createMcpServerInstance(tools: McpServerTools): McpServer {
+export function createMcpServerInstance(
+  tools: McpServerTools,
+  config: AppConfig,
+  instructions: string = DEFAULT_INSTRUCTIONS,
+): McpServer {
+  const { name, title } = config.server;
   const server = new McpServer(
     {
-      name: "docs-mcp-server",
-      version: "0.1.0",
+      name,
+      ...(title !== undefined ? { title } : {}),
+      version: __APP_VERSION__,
     },
     {
-      // Server-level description surfaced to LLM clients via the MCP
-      // initialize handshake. Positions this server against internal-company
-      // KB search tools so models route "library API docs" questions here and
-      // internal-document questions elsewhere.
-      instructions:
-        "API and technical documentation retrieval: how to call APIs, endpoints, parameters, SDK " +
-        "usage, code examples, and version resolution — covers open-source libraries/frameworks " +
-        "and internal company systems alike. Use this server for developer-facing technical " +
-        "questions. Non-technical company knowledge (policies, processes, manuals, project " +
-        "material) belongs to the internal KB search tools instead.",
       capabilities: {
         tools: {},
         resources: {},
       },
+      instructions,
     },
   );
 
   // --- Tool Definitions (search/retrieval only) ---
 
   // Search docs tool
-  server.tool(
+  server.registerTool(
     "search_docs",
-    "Search up-to-date API and technical documentation for a library, framework, package, or " +
-      "internal company system (endpoints, parameters, SDK usage, code examples). Examples:\n\n" +
-      '- {library: "react", query: "hooks lifecycle"} -> matches latest version of React\n' +
-      '- {library: "react", version: "18.0.0", query: "hooks lifecycle"} -> matches React 18.0.0 or earlier\n' +
-      '- {library: "typescript", version: "5.x", query: "ReturnType example"} -> any TypeScript 5.x.x version\n' +
-      '- {library: "typescript", version: "5.2.x", query: "ReturnType example"} -> any TypeScript 5.2.x version',
     {
-      library: z.string().trim().describe("Library name."),
-      version: z
-        .string()
-        .trim()
-        .optional()
-        .describe("Library version (exact or X-Range, optional)."),
-      query: z.string().trim().describe("Documentation search query."),
-      limit: z.number().optional().default(5).describe("Maximum number of results."),
-    },
-    {
-      title: "Search Library Documentation",
-      readOnlyHint: true,
-      destructiveHint: false,
+      description:
+        "Search up-to-date API and technical documentation for a library, framework, package, or " +
+        "internal company system (endpoints, parameters, SDK usage, code examples). Examples:\n\n" +
+        '- {library: "react", query: "hooks lifecycle"} -> matches latest version of React\n' +
+        '- {library: "react", version: "18.0.0", query: "hooks lifecycle"} -> matches React 18.0.0 or earlier\n' +
+        '- {library: "typescript", version: "5.x", query: "ReturnType example"} -> any TypeScript 5.x.x version\n' +
+        '- {library: "typescript", version: "5.2.x", query: "ReturnType example"} -> any TypeScript 5.2.x version',
+      inputSchema: {
+        library: z.string().trim().describe("Library name."),
+        version: z
+          .string()
+          .trim()
+          .optional()
+          .describe("Library version (exact or X-Range, optional)."),
+        query: z.string().trim().describe("Documentation search query."),
+        limit: z.number().optional().default(5).describe("Maximum number of results."),
+      },
+      annotations: {
+        title: "Search Library Documentation",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async ({ library, version, query, limit }) => {
       // Track MCP tool usage
@@ -68,7 +147,7 @@ export function createMcpServerInstance(tools: McpServerTools): McpServer {
         context: "mcp_server",
         library,
         version,
-        query: query.substring(0, 100), // Truncate query for privacy
+        queryLength: query.length, // Never the query itself
         limit,
       });
 
@@ -102,16 +181,17 @@ ${r.content}\n`,
   );
 
   // List libraries tool
-  server.tool(
+  server.registerTool(
     "list_libraries",
-    "List all indexed documentation sources (libraries, frameworks, packages, internal systems).",
     {
-      // no params
-    },
-    {
-      title: "List Libraries",
-      readOnlyHint: true,
-      destructiveHint: false,
+      description:
+        "List all indexed documentation sources (libraries, frameworks, packages, internal systems).",
+      inputSchema: {},
+      annotations: {
+        title: "List Libraries",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async () => {
       // Track MCP tool usage
@@ -136,21 +216,24 @@ ${r.content}\n`,
   );
 
   // Find version tool
-  server.tool(
+  server.registerTool(
     "find_version",
-    "Find the best matching version for a documented library or system. Use to identify available or closest versions.",
     {
-      library: z.string().trim().describe("Library name."),
-      targetVersion: z
-        .string()
-        .trim()
-        .optional()
-        .describe("Version pattern to match (exact or X-Range, optional)."),
-    },
-    {
-      title: "Find Library Version",
-      readOnlyHint: true,
-      destructiveHint: false,
+      description:
+        "Find the best matching version for a documented library or system. Use to identify available or closest versions.",
+      inputSchema: {
+        library: z.string().trim().describe("Library name."),
+        targetVersion: z
+          .string()
+          .trim()
+          .optional()
+          .describe("Version pattern to match (exact or X-Range, optional)."),
+      },
+      annotations: {
+        title: "Find Library Version",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async ({ library, targetVersion }) => {
       // Track MCP tool usage
@@ -175,50 +258,9 @@ ${r.content}\n`,
     },
   );
 
-  // Fetch URL tool
-  // Disabled (2026-09-22): generic web-page fetching overlaps with other
-  // tooling and is out of this server's API-docs-retrieval scope. Kept as a
-  // comment for easy re-enable.
-  /*
-  server.tool(
-    "fetch_url",
-    "Fetch a single URL and convert its content to Markdown. Use this tool to read the content of any web page.",
-    {
-      url: z.string().url().describe("URL to fetch and convert to Markdown."),
-      followRedirects: z
-        .boolean()
-        .optional()
-        .default(true)
-        .describe("Follow HTTP redirects (3xx responses)."),
-    },
-    {
-      title: "Fetch URL",
-      readOnlyHint: true,
-      destructiveHint: false,
-      openWorldHint: true, // requires internet access
-    },
-    async ({ url, followRedirects }) => {
-      // Track MCP tool usage
-      telemetry.track(TelemetryEvent.TOOL_USED, {
-        tool: "fetch_url",
-        context: "mcp_server",
-        url: new URL(url).hostname, // Privacy-safe URL tracking
-        followRedirects,
-      });
-
-      try {
-        const result = await tools.fetchUrl.execute({ url, followRedirects });
-        return createResponse(result);
-      } catch (error) {
-        return createError(error);
-      }
-    },
-  );
-  */
-
   // --- Resource Definitions ---
 
-  server.resource(
+  server.registerResource(
     "libraries",
     "docs://libraries",
     {
@@ -236,7 +278,7 @@ ${r.content}\n`,
     },
   );
 
-  server.resource(
+  server.registerResource(
     "versions",
     new ResourceTemplate("docs://libraries/{library}/versions", {
       list: undefined,
@@ -247,7 +289,12 @@ ${r.content}\n`,
     async (uri: URL, { library }) => {
       const result = await tools.listLibraries.execute();
 
-      const lib = result.libraries.find((l: { name: string }) => l.name === library);
+      // The template variable arrives percent-encoded (a name containing "/" must
+      // be sent as %2F), and names match case-insensitively.
+      const requested = decodeUriVariable(library);
+      const lib = result.libraries.find((l: { name: string }) =>
+        libraryNamesMatch(l.name, requested),
+      );
       if (!lib) {
         return { contents: [] };
       }
